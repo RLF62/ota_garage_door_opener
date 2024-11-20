@@ -76,7 +76,7 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <br><br>
 <center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
 <br><br>
-<center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">~VENT~</button></center>
+<center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">VENT</button></center>
 <br><br>
 <center> <button class="button" name="DOOR" value="UPDATE" type="submit">UPDATE FIRMWARE</button></center>
 </center>
