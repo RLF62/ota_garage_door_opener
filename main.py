@@ -17,6 +17,9 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
+firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+ota_updater.download_and_install_update_if_available()
 
 
 # get the current version (stored in version.json)
@@ -94,11 +97,6 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 </body></html>
 """
 
-def Update_Firmware():
-    firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-    ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-    ota_updater.download_and_install_update_if_available()
-    
 def ReadTemperature():
     adc_value = sensor.read_u16()
     volt = (3.3/65535) * adc_value
@@ -321,7 +319,7 @@ async def serve_client(reader, writer):
     elif cmd_light == 8:
         control_door('light')
     elif cmd_firmware == 8:
-        Update_Firmware()  
+        machine.reset()  
 
 
 
