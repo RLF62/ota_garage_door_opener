@@ -14,7 +14,7 @@ import BME280
 import machine
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from machine import Pin, I2C
-from ota.import OTAUpdater
+from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
 # Configure your WiFi SSID and password
