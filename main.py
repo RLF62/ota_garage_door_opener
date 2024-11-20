@@ -1,0 +1,359 @@
+"""
+
+Garage Door Controller code
+Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
+
+
+"""
+
+import time
+import utime
+import network
+import uasyncio as asyncio
+import BME280
+import machine
+from PiicoDev_VL53L1X import PiicoDev_VL53L1X
+from machine import Pin, I2C
+from ota.import OTAUpdater
+from WIFI_CONFIG import ssid, password
+
+# Configure your WiFi SSID and password
+firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+
+ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+ota_updater.download_and_install_update_if_available()
+
+
+#adcpin = 4
+#sensor = machine.ADC(adcpin)
+
+i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
+
+bme = BME280.BME280(i2c=i2c, addr=0x77)
+distSensor = PiicoDev_VL53L1X()
+
+irq = 0
+int1 = Pin(10, Pin.IN,Pin.PULL_UP) #light
+int1.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(10))
+
+int2 = Pin(11, Pin.IN,Pin.PULL_UP) #up
+int2.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(11))
+
+int3 = Pin(12, Pin.IN,Pin.PULL_UP) #down
+int3.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(12))
+
+int4 = Pin(13, Pin.IN,Pin.PULL_UP) #10%
+int4.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(13))
+debounce_time=0
+
+# Hardware definitions
+led = Pin("LED", Pin.OUT, value=1)
+pin_stop = Pin(18, Pin.OUT, value=0)
+pin_light = Pin(22, Pin.OUT, value=0)
+
+adcpin = 4
+sensor = machine.ADC(adcpin)
+
+door_distance=0
+ten_percent_val=80
+fifty_percent_val=48
+MAX_TIMEOUT=30
+readings=[]
+current_position=0
+button_hold_time=1.5
+current_string="Current position is "
+
+
+check_interval_sec=0.25
+
+wlan = network.WLAN(network.STA_IF)
+
+#<center> <button class="buttonRed" name="DOOR" value="STOP" type="submit">STOP</button>
+#<br><br>
+# The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
+#<meta name="viewport2" http-equiv="refresh" content="5, url=/">
+html = """<!DOCTYPE html><html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport2" http-equiv="refresh" content="10, url=/">
+<link rel="icon" href="data:,">
+<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+.button { background-color: #4CAF50; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
+.buttonRed { background-color: #d11d53; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
+text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
+</style></head>
+<body> 
+<center><h1>Garage Door Main</h1></center><br><br>
+<form><center>
+<center> <button class="button" name="DOOR" value="UP" type="submit">Open</button>
+<br><br>
+<center> <button class="button" name="DOOR" value="DOWN" type="submit">Close</button></center>
+<br><br>
+<center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
+<br><br>
+<center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">10 PERCENT</button></center>
+</center>
+</form>
+<br><br>
+<br><br>
+<p>%s<p>
+</body></html>
+"""
+
+
+def ReadTemperature():
+    adc_value = sensor.read_u16()
+    volt = (3.3/65535) * adc_value
+    temperature = 27 - (volt - 0.706) / 0.001721
+    return round(temperature, 1)
+
+def celsius_to_fahrenheit(temp_celsius): 
+    temp_fahrenheit = temp_celsius * (9/5) + 32 
+    return round(temp_fahrenheit,1)
+
+def handle_interrupt(irq):
+    interrupt_flag, debounce_time, irq_interrupt_flag
+    if (time.ticks_ms()-debounce_time) > 10000:
+        interrupt_flag = 1
+        debounce_time=time.ticks_ms()
+        irq_interrupt_flag = 1
+        pin_control_door(irq)
+
+            
+def average_of_list(readings):
+  if not readings:
+    return 0  # Return 0 if the list is empty
+    return sum(readings) / len(readings)
+
+
+
+def VL53L1X():
+    distance = distSensor.read()
+    distance = distance * .0393701
+    #print(distance)
+    return distance
+
+
+def blink_led(frequency = 0.5, num_blinks = 3):
+    for _ in range(num_blinks):
+        led.on()
+        time.sleep(frequency)
+        led.off()
+        time.sleep(frequency)
+
+def control_door(cmd):
+    if cmd == 'stop':
+        pin_stop.on()
+        led.on()
+        time.sleep(button_hold_time)
+        led.off()
+        pin_stop.off()
+
+    if cmd == 'up':
+        pin_stop.on()
+        led.on()
+        time.sleep(button_hold_time)
+        led.off()
+        pin_stop.off()
+
+    if cmd == 'down':
+        pin_stop.on()
+        led.on()
+        time.sleep(button_hold_time)
+        led.off()
+        pin_stop.off()
+
+    if cmd == 'light':
+        pin_light.on()
+        led.on()
+        time.sleep(button_hold_time)
+        led.off()
+        pin_light.off()
+        
+        
+def pin_control_door(pin_cmd):
+    current_position = VL53L1X()
+    print(current_string + str(current_position))
+    if pin_cmd == 10:
+        control_door('light')
+      
+    elif pin_cmd == 11:
+        control_door('up')
+        time.sleep(2)
+        if VL53L1X() >= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('up')
+        
+    elif pin_cmd == 12:
+        control_door('down')
+        time.sleep(2)
+        if VL53L1X() <= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('down')        
+        
+    elif pin_cmd == 13:
+        start_time = time.time()
+        if VL53L1X() < ten_percent_val:
+            control_door('down')
+            time.sleep(2)
+            if VL53L1X() < current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('down')
+            time_delta = time.time() - start_time
+            while VL53L1X() <= ten_percent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+            else:
+                control_door('stop')
+                led.off()
+        elif VL53L1X() > ten_percent_val:
+            time_delta = time.time() - start_time
+            control_door('up')
+            time.sleep(2)
+            if VL53L1X() > current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('up')            
+            while VL53L1X() >= ten_percent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+            else:
+                control_door('stop')
+                led.off()
+                
+async def connect_to_wifi():
+    wlan.active(True)
+    wlan.config(pm = 0xa11140)  # Disable powersave mode
+    wlan.connect(ssid, password)
+
+    # Wait for connect or fail
+    max_wait = 10
+    while max_wait > 0:
+        if wlan.status() < 0 or wlan.status() >= 3:
+            break
+        max_wait -= 1
+        print('waiting for connection...')
+        time.sleep(1)
+
+    # Handle connection error
+    if wlan.status() != 3:
+        blink_led(0.1, 10)
+        raise RuntimeError('WiFi connection failed')
+    else:
+        blink_led(0.5, 2)
+        print('connected')
+        status = wlan.ifconfig()
+        print('ip = ' + status[0])
+
+
+async def serve_client(reader, writer):
+    print("Client connected")
+    request_line = await reader.readline()
+    print("Request:", request_line)
+    # We are not interested in HTTP request headers, skip them
+    while await reader.readline() != b"\r\n":
+        pass
+    
+    # find() valid garage-door commands within the request
+    request = str(request_line)
+    cmd_up = request.find('DOOR=UP')
+    cmd_down = request.find('DOOR=DOWN')
+    #cmd_stop = request.find('DOOR=STOP')
+    cmd_10 = request.find('DOOR=10_PERCENT')
+    cmd_light = request.find('DOOR=LIGHT')
+    
+    # Carry out a command if it is found (found at index: 8)
+    current_position = VL53L1X()
+    print(current_string + str(current_position))
+
+    if cmd_up == 8:
+        control_door('up')
+        time.sleep(2)
+        if VL53L1X() >= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('up')
+        
+    elif cmd_down == 8:
+        control_door('down')
+        time.sleep(2)
+        if VL53L1X() <= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('down')        
+        
+    elif cmd_10 == 8:
+        start_time = time.time()
+        if VL53L1X() < ten_percent_val:
+            control_door('down')
+            time.sleep(2)
+            if VL53L1X() < current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('down')
+            time_delta = time.time() - start_time
+            while VL53L1X() <= ten_percent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+            else:
+                control_door('stop')
+                led.off()
+        elif VL53L1X() > ten_percent_val:
+            time_delta = time.time() - start_time
+            control_door('up')
+            time.sleep(2)
+            if VL53L1X() > current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('up')            
+            while VL53L1X() >= ten_percent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+            else:
+                control_door('stop')
+                led.off() 
+    elif cmd_light == 8:
+        control_door('light')
+  
+    temperatureC = ReadTemperature()
+    temperatureF = celsius_to_fahrenheit(temperatureC)
+    
+    hum = bme.humidity
+    tempF = (bme.read_temperature()/100) * (9/5) + 32
+    tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
+    tempF = tempF + 'Humidity ' + hum
+    status = wlan.ifconfig()
+    print('ip = ' + status[0])
+    response = html % tempF      #temperatureF
+    writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
+    writer.write(response)
+
+    await writer.drain()
+    await writer.wait_closed()
+
+
+async def main():
+    
+    print('Connecting to WiFi...')
+    asyncio.create_task(connect_to_wifi())
+    #print('Setting up webserver...')
+    asyncio.create_task(asyncio.start_server(serve_client, "0.0.0.0", 80))
+    wlan_connected = False
+    while True:
+        if wlan_connected and wlan.status() != network.STAT_GOT_IP:
+            machine.reset()
+        await asyncio.sleep(check_interval_sec)
+        #utime.sleep(1)
+
+try:
+    asyncio.run(main())
+
+finally:
+    asyncio.new_event_loop()
