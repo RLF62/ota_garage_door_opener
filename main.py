@@ -3,8 +3,10 @@
 Garage Door Controller code
 Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
 
-"""
 
+"""
+import os
+import json
 import time
 import utime
 import network
@@ -16,7 +18,12 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-
+        # get the current version (stored in version.json)
+if 'version.json' in os.listdir():    
+    with open('version.json') as f:
+        current_version = int(json.load(f)['version'])
+    print(f"Current device firmware version is '{current_version}'")
+            
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
 bme = BME280.BME280(i2c=i2c, addr=0x77)
@@ -320,7 +327,7 @@ async def serve_client(reader, writer):
     hum = bme.humidity
     tempF = (bme.read_temperature()/100) * (9/5) + 32
     tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
-    tempF = tempF + 'Humidity ' + hum
+    tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version)
     #status = wlan.ifconfig()
     #print('ip = ' + status[0])
     response = html % tempF      #temperatureF
