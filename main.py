@@ -3,7 +3,6 @@
 Garage Door Controller code
 Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
 
-
 """
 import os
 import json
@@ -18,7 +17,9 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-        # get the current version (stored in version.json)
+
+
+# get the current version (stored in version.json)
 if 'version.json' in os.listdir():    
     with open('version.json') as f:
         current_version = int(json.load(f)['version'])
@@ -84,7 +85,7 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <br><br>
 <center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">VENT</button></center>
 <br><br>
-<center> <button class="button" name="DOOR" value="UPDATE" type="submit">UPDATE FIRMWARE</button></center>
+<center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
 </center>
 </form>
 <br><br>
@@ -93,7 +94,11 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 </body></html>
 """
 
-
+def Update_Firmware():
+    firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+    ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+    ota_updater.download_and_install_update_if_available()
+    
 def ReadTemperature():
     adc_value = sensor.read_u16()
     volt = (3.3/65535) * adc_value
@@ -162,6 +167,8 @@ def control_door(cmd):
         time.sleep(button_hold_time)
         led.off()
         pin_light.off()
+  
+        
         
 def pin_control_door(pin_cmd):
     current_position = VL53L1X()
@@ -255,10 +262,9 @@ async def serve_client(reader, writer):
     request = str(request_line)
     cmd_up = request.find('DOOR=UP')
     cmd_down = request.find('DOOR=DOWN')
-    #cmd_stop = request.find('DOOR=STOP')
     cmd_10 = request.find('DOOR=10_PERCENT')
     cmd_light = request.find('DOOR=LIGHT')
-    update_firmware = request.find('DOOR=UPDATE')
+    cmd_firmware = request.find('DOOR=UD')
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
@@ -311,14 +317,13 @@ async def serve_client(reader, writer):
                 print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
             else:
                 control_door('stop')
-                led.off() 
+                led.off()
     elif cmd_light == 8:
         control_door('light')
-    elif update_firmware == 8:
-        # Check for updates on GitHub
-        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-        ota_updater.download_and_install_update_if_available()
+    elif cmd_firmware == 8:
+        Update_Firmware()  
+
+
 
     
     temperatureC = ReadTemperature()
