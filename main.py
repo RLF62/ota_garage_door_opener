@@ -23,10 +23,6 @@ firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
 ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
 ota_updater.download_and_install_update_if_available()
 
-
-#adcpin = 4
-#sensor = machine.ADC(adcpin)
-
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
 bme = BME280.BME280(i2c=i2c, addr=0x77)
@@ -50,7 +46,6 @@ debounce_time=0
 led = Pin("LED", Pin.OUT, value=1)
 pin_stop = Pin(18, Pin.OUT, value=0)
 pin_light = Pin(22, Pin.OUT, value=0)
-
 adcpin = 4
 sensor = machine.ADC(adcpin)
 
@@ -62,16 +57,11 @@ readings=[]
 current_position=0
 button_hold_time=1.5
 current_string="Current position is "
-
-
 check_interval_sec=0.25
 
 wlan = network.WLAN(network.STA_IF)
 
-#<center> <button class="buttonRed" name="DOOR" value="STOP" type="submit">STOP</button>
-#<br><br>
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
-#<meta name="viewport2" http-equiv="refresh" content="5, url=/">
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
