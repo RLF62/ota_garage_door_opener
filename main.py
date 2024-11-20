@@ -1,8 +1,7 @@
-T"""
+"""
 
 Garage Door Controller code
 Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
-
 
 """
 
@@ -308,7 +307,7 @@ async def serve_client(reader, writer):
                 led.off() 
     elif cmd_light == 8:
         control_door('light')
-    elif update_firmware == 8;
+    elif update_firmware == 8:
         # Check for updates on GitHub
         firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
         ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
