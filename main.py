@@ -17,13 +17,6 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-
-
-# get the current version (stored in version.json)
-if 'version.json' in os.listdir():    
-    with open('version.json') as f:
-        current_version = int(json.load(f)['version'])
-    print(f"Current device firmware version is '{current_version}'")
             
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
@@ -324,7 +317,11 @@ async def serve_client(reader, writer):
         Update_Firmware()  
 
 
-
+    # get the current version (stored in version.json)
+    if 'version.json' in os.listdir():    
+        with open('version.json') as f:
+            current_version = int(json.load(f)['version'])
+        print(f"Current device firmware version is '{current_version}'")
     
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
