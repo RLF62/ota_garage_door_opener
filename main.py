@@ -17,9 +17,7 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-ota_updater.download_and_install_update_if_available()
+
 
 
 # get the current version (stored in version.json)
@@ -319,7 +317,9 @@ async def serve_client(reader, writer):
     elif cmd_light == 8:
         control_door('light')
     elif cmd_firmware == 8:
-        machine.reset()  
+        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+        ota_updater.download_and_install_update_if_available()
 
 
 
@@ -359,3 +359,4 @@ try:
 
 finally:
     asyncio.new_event_loop()
+
