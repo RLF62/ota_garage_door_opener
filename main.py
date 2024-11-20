@@ -17,11 +17,6 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-# Configure your WiFi SSID and password
-firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-
-ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-ota_updater.download_and_install_update_if_available()
 
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
@@ -82,6 +77,8 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
 <br><br>
 <center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">10 PERCENT</button></center>
+<br><br>
+<center> <button class="button" name="DOOR" value="UPDATE" type="submit">UPDATE FIRMWARE</button></center>
 </center>
 </form>
 <br><br>
@@ -159,7 +156,6 @@ def control_door(cmd):
         time.sleep(button_hold_time)
         led.off()
         pin_light.off()
-        
         
 def pin_control_door(pin_cmd):
     current_position = VL53L1X()
@@ -256,6 +252,7 @@ async def serve_client(reader, writer):
     #cmd_stop = request.find('DOOR=STOP')
     cmd_10 = request.find('DOOR=10_PERCENT')
     cmd_light = request.find('DOOR=LIGHT')
+    update_firmware = request.find('DOOR=UPDATE')
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
@@ -311,7 +308,13 @@ async def serve_client(reader, writer):
                 led.off() 
     elif cmd_light == 8:
         control_door('light')
-  
+    elif update_firmware == 8;
+        # Check for updates on GitHub
+        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+        ota_updater.download_and_install_update_if_available()
+
+    
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
     
