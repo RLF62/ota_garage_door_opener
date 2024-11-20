@@ -321,8 +321,8 @@ async def serve_client(reader, writer):
     tempF = (bme.read_temperature()/100) * (9/5) + 32
     tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
     tempF = tempF + 'Humidity ' + hum
-    status = wlan.ifconfig()
-    print('ip = ' + status[0])
+    #status = wlan.ifconfig()
+    #print('ip = ' + status[0])
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
     writer.write(response)
