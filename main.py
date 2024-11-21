@@ -13,11 +13,14 @@ import uasyncio as asyncio
 import BME280
 import machine
 import gc
+import urequests as requests
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
+
+TEXT_URL = "http://192.168.50.69/pico_ping/ping.html"
 
 
 
@@ -54,7 +57,7 @@ adcpin = 4
 sensor = machine.ADC(adcpin)
 
 door_distance=0
-ten_percent_val=80
+vent_val=80
 fifty_percent_val=48
 MAX_TIMEOUT=30
 readings=[]
@@ -70,7 +73,7 @@ wlan = network.WLAN(network.STA_IF)
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="viewport2" http-equiv="refresh" content="10, url=/">
+<meta name="viewport2" http-equiv="refresh" content="5, url=/">
 <link rel="icon" href="data:,">
 <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
 .button { background-color: #4CAF50; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
@@ -86,7 +89,7 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <br><br>
 <center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
 <br><br>
-<center> <button class="button" name="DOOR" value="10_PERCENT" type="submit">VENT</button></center>
+<center> <button class="button" name="DOOR" value="VENT" type="submit">VENT</button></center>
 <br><br>
 <center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
 </center>
@@ -193,7 +196,7 @@ def pin_control_door(pin_cmd):
         
     elif pin_cmd == 13:
         start_time = time.time()
-        if VL53L1X() < ten_percent_val:
+        if VL53L1X() < vent_val:
             control_door('down')
             time.sleep(2)
             if VL53L1X() < current_position:
@@ -201,14 +204,14 @@ def pin_control_door(pin_cmd):
                 time.sleep(3)
                 control_door('down')
             time_delta = time.time() - start_time
-            while VL53L1X() <= ten_percent_val and time_delta <= MAX_TIMEOUT:
+            while VL53L1X() <= vent_val and time_delta <= MAX_TIMEOUT:
                 time_delta = time.time() - start_time
                 led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
             else:
                 control_door('stop')
                 led.off()
-        elif VL53L1X() > ten_percent_val:
+        elif VL53L1X() > vent_val:
             time_delta = time.time() - start_time
             control_door('up')
             time.sleep(2)
@@ -216,10 +219,10 @@ def pin_control_door(pin_cmd):
                 control_door('stop')
                 time.sleep(3)
                 control_door('up')            
-            while VL53L1X() >= ten_percent_val and time_delta <= MAX_TIMEOUT:
+            while VL53L1X() >= vent_val and time_delta <= MAX_TIMEOUT:
                 time_delta = time.time() - start_time
                 led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
+                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
             else:
                 control_door('stop')
                 led.off()
@@ -261,72 +264,13 @@ async def serve_client(reader, writer):
     request = str(request_line)
     cmd_up = request.find('DOOR=UP')
     cmd_down = request.find('DOOR=DOWN')
-    cmd_10 = request.find('DOOR=10_PERCENT')
+    cmd_10 = request.find('DOOR=VENT')
     cmd_light = request.find('DOOR=LIGHT')
     cmd_firmware = request.find('DOOR=UD')
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
     print(current_string + str(current_position))
-
-    if cmd_up == 8:
-        control_door('up')
-        time.sleep(2)
-        if VL53L1X() >= current_position:
-            control_door('stop')
-            time.sleep(3)
-            control_door('up')
-        
-    elif cmd_down == 8:
-        control_door('down')
-        time.sleep(2)
-        if VL53L1X() <= current_position:
-            control_door('stop')
-            time.sleep(3)
-            control_door('down')        
-        
-    elif cmd_10 == 8:
-        start_time = time.time()
-        if VL53L1X() < ten_percent_val:
-            control_door('down')
-            time.sleep(2)
-            if VL53L1X() < current_position:
-                control_door('stop')
-                time.sleep(3)
-                control_door('down')
-            time_delta = time.time() - start_time
-            while VL53L1X() <= ten_percent_val and time_delta <= MAX_TIMEOUT:
-                time_delta = time.time() - start_time
-                led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
-            else:
-                control_door('stop')
-                led.off()
-        elif VL53L1X() > ten_percent_val:
-            time_delta = time.time() - start_time
-            control_door('up')
-            time.sleep(2)
-            if VL53L1X() > current_position:
-                control_door('stop')
-                time.sleep(3)
-                control_door('up')            
-            while VL53L1X() >= ten_percent_val and time_delta <= MAX_TIMEOUT:
-                time_delta = time.time() - start_time
-                led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(ten_percent_val))
-            else:
-                control_door('stop')
-                led.off()
-    elif cmd_light == 8:
-        control_door('light')
-    elif cmd_firmware == 8:
-        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-        ota_updater.download_and_install_update_if_available()
-
-
-
-    
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
     hum = bme.humidity
@@ -337,6 +281,59 @@ async def serve_client(reader, writer):
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
     writer.write(response)
+    
+    if cmd_up == 8:
+        control_door('up')
+        time.sleep(2)
+        if VL53L1X() >= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('up')
+    elif cmd_down == 8:
+        control_door('down')
+        time.sleep(2)
+        if VL53L1X() <= current_position:
+            control_door('stop')
+            time.sleep(3)
+            control_door('down')        
+    elif cmd_10 == 8:
+        start_time = time.time()
+        if VL53L1X() < vent_val:
+            control_door('down')
+            time.sleep(2)
+            if VL53L1X() < current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('down')
+            time_delta = time.time() - start_time
+            while VL53L1X() <= vent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
+            else:
+                control_door('stop')
+                led.off()
+        elif VL53L1X() > vent_val:
+            time_delta = time.time() - start_time
+            control_door('up')
+            time.sleep(2)
+            if VL53L1X() > current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('up')            
+            while VL53L1X() >= vent_val and time_delta <= MAX_TIMEOUT:
+                time_delta = time.time() - start_time
+                led.on()
+                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
+            else:
+                control_door('stop')
+                led.off()
+    elif cmd_light == 8:
+        control_door('light')
+    elif cmd_firmware == 8:
+        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+        ota_updater.download_and_install_update_if_available()
 
     await writer.drain()
     await writer.wait_closed()
@@ -347,12 +344,24 @@ async def main():
     asyncio.create_task(connect_to_wifi())
     #print('Setting up webserver...')
     asyncio.create_task(asyncio.start_server(serve_client, "0.0.0.0", 80))
-
+    interval_sec = 0
+    increment_sec = 60
+    timer_sec = time.time() - interval_sec
     
     while True:
         #if gc.mem_free() <= 5000:
             #machine.reset()
         gc.collect()
+        if time.time() - timer_sec > interval_sec:
+            try:
+                r = requests.get(TEXT_URL)
+                print(f"{interval_sec:>5} {r.status_code} {r.reason.decode()} {r.content}")
+                r.close()
+                interval_sec += increment_sec
+            except OSError as e:
+                print(e)
+                machine.reset()
+            timer_sec = time.time()
         #print("Free heap:", gc.mem_free())
         #start_mem = gc.mem_free()
         await asyncio.sleep(check_interval_sec)
