@@ -12,6 +12,7 @@ import network
 import uasyncio as asyncio
 import BME280
 import machine
+import gc
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from machine import Pin, I2C
 from ota import OTAUpdater
@@ -65,6 +66,7 @@ check_interval_sec=0.25
 wlan = network.WLAN(network.STA_IF)
 
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
+#
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -95,6 +97,7 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 </body></html>
 """
 
+        
 def ReadTemperature():
     adc_value = sensor.read_u16()
     volt = (3.3/65535) * adc_value
@@ -326,37 +329,40 @@ async def serve_client(reader, writer):
     
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
-    
     hum = bme.humidity
     tempF = (bme.read_temperature()/100) * (9/5) + 32
     tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
     tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version)
-    #status = wlan.ifconfig()
-    #print('ip = ' + status[0])
+
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
     writer.write(response)
 
     await writer.drain()
     await writer.wait_closed()
-
+    
 
 async def main():
-    
     print('Connecting to WiFi...')
     asyncio.create_task(connect_to_wifi())
     #print('Setting up webserver...')
     asyncio.create_task(asyncio.start_server(serve_client, "0.0.0.0", 80))
-    wlan_connected = False
-    while True:
-        if wlan_connected and wlan.status() != network.STAT_GOT_IP:
-            machine.reset()
-        await asyncio.sleep(check_interval_sec)
-        #utime.sleep(1)
 
+    
+    while True:
+        #if gc.mem_free() <= 5000:
+            #machine.reset()
+        gc.collect()
+        #print("Free heap:", gc.mem_free())
+        #start_mem = gc.mem_free()
+        await asyncio.sleep(check_interval_sec)
+        #print("Free heap:", gc.mem_free())
+        #gc.collect()
+        #end_mem = gc.mem_free()
+        #print( "Point 2 Available memory: {} bytes".format(end_mem) )
+        #print( "Code section 1-2 used {} bytes".format(start_mem - end_mem) )
 try:
     asyncio.run(main())
 
 finally:
     asyncio.new_event_loop()
-
