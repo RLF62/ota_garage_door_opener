@@ -63,7 +63,7 @@ current_position=0
 button_hold_time=1.5
 current_string="Current position is "
 check_interval_sec=0.25
-
+garage_status = ""
 wlan = network.WLAN(network.STA_IF)
 
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
@@ -262,13 +262,21 @@ async def serve_client(reader, writer):
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
+    if current_position <= 40:
+        garage_status = "Open"
+    elif current_position >= 80:
+        garage_status = "Closed"
+    elif current_position >= 40 and current_position <= 82:    
+        garage_status = "Vented"
+        
+        
     print(current_string + str(current_position))
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
     hum = bme.humidity
     tempF = (bme.read_temperature()/100) * (9/5) + 32
     tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
-    tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version)
+    tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version) + '<br>Door is: ' + garage_status
 
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
