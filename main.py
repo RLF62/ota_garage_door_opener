@@ -19,17 +19,17 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
-
 TEXT_URL = "http://192.168.50.69/pico_ping/ping.html"
-
-
 
 # get the current version (stored in version.json)
 if 'version.json' in os.listdir():    
     with open('version.json') as f:
         current_version = int(json.load(f)['version'])
     print(f"Current device firmware version is '{current_version}'")
-            
+firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+ota_updater.download_and_install_update_if_available() 
+
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
 bme = BME280.BME280(i2c=i2c, addr=0x77)
@@ -69,7 +69,10 @@ check_interval_sec=0.25
 wlan = network.WLAN(network.STA_IF)
 
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
-#
+#<br><br>
+#<center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
+#</center>
+
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -90,9 +93,6 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
 <br><br>
 <center> <button class="button" name="DOOR" value="VENT" type="submit">VENT</button></center>
-<br><br>
-<center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
-</center>
 </form>
 <br><br>
 <br><br>
@@ -118,21 +118,17 @@ def handle_interrupt(irq):
         debounce_time=time.ticks_ms()
         irq_interrupt_flag = 1
         pin_control_door(irq)
-
-            
+ 
 def average_of_list(readings):
   if not readings:
     return 0  # Return 0 if the list is empty
     return sum(readings) / len(readings)
-
-
 
 def VL53L1X():
     distance = distSensor.read()
     distance = distance * .0393701
     #print(distance)
     return distance
-
 
 def blink_led(frequency = 0.5, num_blinks = 3):
     for _ in range(num_blinks):
@@ -170,8 +166,6 @@ def control_door(cmd):
         led.off()
         pin_light.off()
   
-        
-        
 def pin_control_door(pin_cmd):
     current_position = VL53L1X()
     print(current_string + str(current_position))
@@ -266,7 +260,7 @@ async def serve_client(reader, writer):
     cmd_down = request.find('DOOR=DOWN')
     cmd_10 = request.find('DOOR=VENT')
     cmd_light = request.find('DOOR=LIGHT')
-    cmd_firmware = request.find('DOOR=UD')
+    #cmd_firmware = request.find('DOOR=UD')
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
@@ -330,10 +324,10 @@ async def serve_client(reader, writer):
                 led.off()
     elif cmd_light == 8:
         control_door('light')
-    elif cmd_firmware == 8:
-        firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-        ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-        ota_updater.download_and_install_update_if_available()
+    #elif cmd_firmware == 8:
+        #firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+        #ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+        #ota_updater.download_and_install_update_if_available()
 
     await writer.drain()
     await writer.wait_closed()
@@ -349,8 +343,6 @@ async def main():
     timer_sec = time.time() - interval_sec
     
     while True:
-        #if gc.mem_free() <= 5000:
-            #machine.reset()
         gc.collect()
         if time.time() - timer_sec > interval_sec:
             try:
@@ -362,14 +354,9 @@ async def main():
                 print(e)
                 machine.reset()
             timer_sec = time.time()
-        #print("Free heap:", gc.mem_free())
-        #start_mem = gc.mem_free()
+
         await asyncio.sleep(check_interval_sec)
-        #print("Free heap:", gc.mem_free())
-        #gc.collect()
-        #end_mem = gc.mem_free()
-        #print( "Point 2 Available memory: {} bytes".format(end_mem) )
-        #print( "Code section 1-2 used {} bytes".format(start_mem - end_mem) )
+
 try:
     asyncio.run(main())
 
