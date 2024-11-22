@@ -348,7 +348,7 @@ async def main():
     ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
     ota_updater.download_and_install_update_if_available() 
     interval_sec = 0
-    increment_sec = 60
+    increment_sec = 30
     timer_sec = time.time() - interval_sec
     
     while True:
