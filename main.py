@@ -26,9 +26,7 @@ if 'version.json' in os.listdir():
     with open('version.json') as f:
         current_version = int(json.load(f)['version'])
     print(f"Current device firmware version is '{current_version}'")
-firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-ota_updater.download_and_install_update_if_available() 
+
 
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
 
@@ -338,6 +336,9 @@ async def main():
     asyncio.create_task(connect_to_wifi())
     #print('Setting up webserver...')
     asyncio.create_task(asyncio.start_server(serve_client, "0.0.0.0", 80))
+    firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+    ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+    ota_updater.download_and_install_update_if_available() 
     interval_sec = 0
     increment_sec = 60
     timer_sec = time.time() - interval_sec
