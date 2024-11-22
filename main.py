@@ -264,9 +264,9 @@ async def serve_client(reader, writer):
     current_position = VL53L1X()
     if current_position <= 40:
         garage_status = "Open"
-    elif current_position >= 80:
+    elif current_position >= 83:
         garage_status = "Closed"
-    elif current_position >= 40 and current_position <= 82:    
+    elif current_position >= 40 and current_position <= 83:    
         garage_status = "Vented"
         
         
@@ -276,7 +276,7 @@ async def serve_client(reader, writer):
     hum = bme.humidity
     tempF = (bme.read_temperature()/100) * (9/5) + 32
     tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
-    tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version) + '<br>Door is: ' + garage_status
+    tempF = tempF + 'Humidity ' + hum + '<br>Version: ' + str(current_version) + '<br>Door is: ' + garage_status + ' ' + str(current_position)
 
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
