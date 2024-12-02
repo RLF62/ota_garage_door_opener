@@ -84,13 +84,11 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 <body> 
 <center><h1>Garage Door Main</h1></center><br><br>
 <form><center>
-<center> <button class="button" name="DOOR" value="UP" type="submit">Open</button>
-<br><br>
-<center> <button class="button" name="DOOR" value="DOWN" type="submit">Close</button></center>
-<br><br>
-<center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
-<br><br>
-<center> <button class="button" name="DOOR" value="VENT" type="submit">VENT</button></center>
+<button class="button" name="DOOR" value="UP" type="submit">Open</button><br><br>
+<button class="button" name="DOOR" value="DOWN" type="submit">Close</button><br><br>
+<button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button><br><br>
+<button class="button" name="DOOR" value="VENT" type="submit">VENT</button>
+</center>
 </form>
 <br><br>
 <br><br>
