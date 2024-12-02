@@ -318,11 +318,11 @@ async def serve_client(reader, writer):
             writer.write(b'HTTP/1.0 404 Not Found\r\n\r\n')
     else:
     
-    cmd_up = request.find('DOOR=UP')
-    cmd_down = request.find('DOOR=DOWN')
-    cmd_10 = request.find('DOOR=VENT')
-    cmd_light = request.find('DOOR=LIGHT')
-    #cmd_firmware = request.find('DOOR=UD')
+        cmd_up = request.find('DOOR=UP')
+        cmd_down = request.find('DOOR=DOWN')
+        cmd_10 = request.find('DOOR=VENT')
+        cmd_light = request.find('DOOR=LIGHT')
+        #cmd_firmware = request.find('DOOR=UD')
     
     # Carry out a command if it is found (found at index: 8)
     current_position = VL53L1X()
