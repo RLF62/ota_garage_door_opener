@@ -6,6 +6,7 @@ Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to
 """
 import os
 import json
+import ujson as json
 import time
 import utime
 import network
@@ -66,6 +67,25 @@ check_interval_sec=0.25
 garage_status = ""
 wlan = network.WLAN(network.STA_IF)
 
+
+def get_manifest_json():
+    manifest = {
+        "name": "Garage Door Controller",
+        "short_name": "GarageDoor",
+        "display": "standalone",
+        "theme_color": "#4A90E2",
+        "background_color": "#4A90E2",
+        "icons": [
+            {
+                "src": "icon.png",
+                "type": "image/png",
+                "sizes": "192x192"
+            }
+        ]
+    }
+    return json.dumps(manifest)
+
+
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
 #<br><br>
 #<center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
@@ -73,24 +93,55 @@ wlan = network.WLAN(network.STA_IF)
 
 html = """<!DOCTYPE html><html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="viewport2" http-equiv="refresh" content="5, url=/">
-<link rel="icon" href="data:,">
-<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
-.button { background-color: #4CAF50; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
-.buttonRed { background-color: #d11d53; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
-text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
-</style></head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <style>
+        html {
+            font-family: Helvetica;
+            display: inline-block;
+            margin: 0px auto;
+            text-align: center;
+        }
+        .button, .homeButton {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+        }
+        .buttonRed {
+            background-color: #d11d53;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+        }
+        .homeButton {
+            background-color: #008cba;
+            border: none; /* Different color for home button */
+        }
+    </style>
+    <link rel="manifest" href="/manifest.json">
+</head>
 <body> 
 <center><h1>Garage Door Main</h1></center><br><br>
 <form><center>
-<center> <button class="button" name="DOOR" value="UP" type="submit">Open</button>
-<br><br>
-<center> <button class="button" name="DOOR" value="DOWN" type="submit">Close</button></center>
-<br><br>
-<center> <button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button></center>
-<br><br>
-<center> <button class="button" name="DOOR" value="VENT" type="submit">VENT</button></center>
+<button class="button" name="DOOR" value="UP" type="submit">Open</button><br><br>
+<button class="button" name="DOOR" value="DOWN" type="submit">Close</button><br><br>
+<button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button><br><br>
+<button class="button" name="DOOR" value="VENT" type="submit">VENT</button>
+<a href="http://192.168.50.59:5000" class="homeButton">Home Dashboard</a>  <!-- Home button link -->
+</center>
 </form>
 <br><br>
 <br><br>
@@ -254,6 +305,19 @@ async def serve_client(reader, writer):
     
     # find() valid garage-door commands within the request
     request = str(request_line)
+    if '/manifest.json' in request:
+        manifest_data = get_manifest_json()
+        writer.write('HTTP/1.0 200 OK\r\nContent-type: application/manifest+json\r\n\r\n')
+        writer.write(manifest_data.encode())
+    elif '/icon.png' in request:
+        try:
+            with open('icon.png', 'rb') as f:
+                icon_data = f.read()
+            writer.write(b'HTTP/1.0 200 OK\r\nContent-Type: image/png\r\n\r\n' + icon_data)
+        except FileNotFoundError:
+            writer.write(b'HTTP/1.0 404 Not Found\r\n\r\n')
+    else:
+    
     cmd_up = request.find('DOOR=UP')
     cmd_down = request.find('DOOR=DOWN')
     cmd_10 = request.find('DOOR=VENT')
