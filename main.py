@@ -272,8 +272,10 @@ async def serve_client(reader, writer):
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
     hum = bme.humidity
+    hum = f"{hum:.1f}"
     tempF = (bme.read_temperature()/100) * (9/5) + 32
-    tempF = 'Temp ' + str(round(tempF, 2)) + '&deg;F<br>'
+    tempF = f"{tempF:.1f}"
+    tempF = 'Temp ' + str(tempF) + '&deg;F<br>'
     tempF = tempF + 'Humidity ' + hum + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
 
     response = html % tempF      #temperatureF
