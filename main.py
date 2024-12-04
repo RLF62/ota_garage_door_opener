@@ -19,6 +19,7 @@ from machine import Pin, I2C
 from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
+
 TEXT_URL = "http://192.168.50.69/pico_ping/ping.html"
 
 # get the current version (stored in version.json)
@@ -272,11 +273,11 @@ async def serve_client(reader, writer):
     temperatureC = ReadTemperature()
     temperatureF = celsius_to_fahrenheit(temperatureC)
     hum = bme.humidity
+    hum = float(hum[:-1])
     hum = f"{hum:.1f}"
     tempF = (bme.read_temperature()/100) * (9/5) + 32
-    tempF = f"{tempF:.1f}"
-    tempF = 'Temp ' + str(tempF) + '&deg;F<br>'
-    tempF = tempF + 'Humidity ' + hum + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
+    tempF = 'Temp ' + str(round(tempF, 1)) + ' &deg;F<br>'
+    tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
 
     response = html % tempF      #temperatureF
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
@@ -371,3 +372,4 @@ try:
 
 finally:
     asyncio.new_event_loop()
+
