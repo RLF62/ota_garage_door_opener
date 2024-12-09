@@ -75,23 +75,11 @@ wlan = network.WLAN(network.STA_IF)
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="viewport2" http-equiv="refresh" content="5, url=/">
+<meta name="viewport2" http-equiv="refresh" content="3, url=/">
 <link rel="icon" href="data:,">
 <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
-.button { background-color: #4CAF50; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
-.container {
-            text-align: center;
-            border: 2px solid black;
-			width: 10%;
-			padding: 10px;
-			2px solid #000000;
-			margin: auto;
-			text-align: center;
-			font-family: arial;
-			color: white; 
-			font-size: 20px; 
-			background-color: #4CAF50;
-        }
+.button { background-color: #4CAF50; border: 2px solid #000000; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
+.container { background-color: #4CAF50; border: 2px solid #000000; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 20px; margin: 4px 2px; cursor: pointer; }
 </style></head>
 <body> 
 <center><h1>Garage Door Main</h1></center><br><br>
@@ -384,4 +372,3 @@ try:
 
 finally:
     asyncio.new_event_loop()
-
