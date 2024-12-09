@@ -79,8 +79,19 @@ html = """<!DOCTYPE html><html>
 <link rel="icon" href="data:,">
 <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
 .button { background-color: #4CAF50; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
-.buttonRed { background-color: #d11d53; border: 2px solid #000000;; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }
-text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
+.container {
+            text-align: center;
+            border: 2px solid black;
+			width: 10%;
+			padding: 10px;
+			2px solid #000000;
+			margin: auto;
+			text-align: center;
+			font-family: arial;
+			color: white; 
+			font-size: 20px; 
+			background-color: #4CAF50;
+        }
 </style></head>
 <body> 
 <center><h1>Garage Door Main</h1></center><br><br>
@@ -92,8 +103,9 @@ text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
 </center>
 </form>
 <br><br>
-<br><br>
+<div class="container">
 <p>%s<p>
+</div>
 </body></html>
 """
 
