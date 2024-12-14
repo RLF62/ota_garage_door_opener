@@ -20,7 +20,7 @@ from ota import OTAUpdater
 from WIFI_CONFIG import ssid, password
 
 
-TEXT_URL = "http://192.168.50.69/pico_ping/ping.html"
+TEXT_URL = "http://192.168.50.66/pico_ping/ping.html"
 
 # get the current version (stored in version.json)
 if 'version.json' in os.listdir():    
