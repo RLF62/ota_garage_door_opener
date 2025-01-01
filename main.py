@@ -17,7 +17,7 @@ import urequests as requests
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from machine import Pin, I2C
 from ota import OTAUpdater
-from WIFI_CONFIG import ssid, password
+from WIFI_CONFIG import ssid, password, static_ip, subnet_mask, gateway_ip, dns_server
 
 
 TEXT_URL = "http://192.168.50.66/pico_ping/ping.html"
@@ -77,6 +77,8 @@ button_hold_time=1.5
 current_string="Current position is "
 check_interval_sec=0.25
 garage_status = ""
+
+
 wlan = network.WLAN(network.STA_IF)
 
 # The following HTML defines the webpage that is served http-equiv="refresh" content="1"   <p>Distance %s inches<p>
@@ -227,6 +229,7 @@ def pin_control_door(pin_cmd):
 async def connect_to_wifi():
     wlan.active(True)
     wlan.config(pm = 0xa11140)  # Disable powersave mode
+    wlan.ifconfig((static_ip, subnet_mask, gateway_ip, dns_server))
     wlan.connect(ssid, password)
 
     # Wait for connect or fail
@@ -383,3 +386,4 @@ try:
 
 finally:
     asyncio.new_event_loop()
+    
