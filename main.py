@@ -17,7 +17,7 @@ import urequests as requests
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from machine import Pin, I2C
 from ota import OTAUpdater
-from WIFI_CONFIG import ssid, password, static_ip, subnet_mask, gateway_ip, dns_server
+from WIFI_CONFIG import ssid, password, static_ip, subnet_mask, gateway_ip, dns_server, garage_name
 
 
 TEXT_URL = "http://192.168.50.66/pico_ping/ping.html"
@@ -96,7 +96,7 @@ html = """<!DOCTYPE html><html>
 .container { background-color: #4CAF50; border: 2px solid #000000; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 20px; margin: 4px 2px; cursor: pointer; }
 </style></head>
 <body> 
-<center><h1>Garage Door Main</h1></center><br><br>
+<center><h1>""" + garage_name +  """</h1></center><br><br>
 <form><center>
 <button class="button" name="DOOR" value="UP" type="submit">Open</button><br><br>
 <button class="button" name="DOOR" value="DOWN" type="submit">Close</button><br><br>
@@ -386,4 +386,3 @@ try:
 
 finally:
     asyncio.new_event_loop()
-    
