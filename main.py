@@ -35,6 +35,18 @@ bme = BME280.BME280(i2c=i2c, addr=0x77)
 distSensor = PiicoDev_VL53L1X()
 
 irq = 0
+interrupt_flag = 0
+debounce_time = 0
+irq_interrupt_flag = 0
+
+def handle_interrupt(irq):
+    global debounce_time,interrupt_flag,irq_interrupt_flag
+    if (time.ticks_ms()-debounce_time) > 150:
+        interrupt_flag = 1
+        debounce_time=time.ticks_ms()
+        irq_interrupt_flag = irq
+        #pin_control_door(irq)
+        
 int1 = Pin(10, Pin.IN,Pin.PULL_UP) #light
 int1.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(10))
 
@@ -46,7 +58,7 @@ int3.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(12))
 
 int4 = Pin(13, Pin.IN,Pin.PULL_UP) #10%
 int4.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(13))
-debounce_time=0
+
 
 # Hardware definitions
 led = Pin("LED", Pin.OUT, value=1)
@@ -71,7 +83,7 @@ wlan = network.WLAN(network.STA_IF)
 #<br><br>
 #<center> <button class="button" name="DOOR" value="UD" type="submit">UPDATE FIRMWARE</button></center>
 #</center>
-
+#<button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button><br><br>
 html = """<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -86,7 +98,7 @@ html = """<!DOCTYPE html><html>
 <form><center>
 <button class="button" name="DOOR" value="UP" type="submit">Open</button><br><br>
 <button class="button" name="DOOR" value="DOWN" type="submit">Close</button><br><br>
-<button class="button" name="DOOR" value="LIGHT" type="submit">LIGHT</button><br><br>
+
 <button class="button" name="DOOR" value="VENT" type="submit">VENT</button>
 </center>
 </form>
@@ -108,13 +120,7 @@ def celsius_to_fahrenheit(temp_celsius):
     temp_fahrenheit = temp_celsius * (9/5) + 32 
     return round(temp_fahrenheit,1)
 
-def handle_interrupt(irq):
-    interrupt_flag, debounce_time, irq_interrupt_flag
-    if (time.ticks_ms()-debounce_time) > 10000:
-        interrupt_flag = 1
-        debounce_time=time.ticks_ms()
-        irq_interrupt_flag = 1
-        pin_control_door(irq)
+
  
 def average_of_list(readings):
   if not readings:
@@ -341,6 +347,7 @@ async def serve_client(reader, writer):
     
 
 async def main():
+    global irq_interrupt_flag
     print('Connecting to WiFi...')
     asyncio.create_task(connect_to_wifi())
     #print('Setting up webserver...')
@@ -353,6 +360,10 @@ async def main():
     timer_sec = time.time() - interval_sec
     
     while True:
+        if irq_interrupt_flag != 0:
+            pin_control_door(irq_interrupt_flag)
+            print(irq_interrupt_flag)
+            irq_interrupt_flag = 0
         gc.collect()
         if time.time() - timer_sec > interval_sec:
             try:
