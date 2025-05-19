@@ -30,10 +30,20 @@ if 'version.json' in os.listdir():
 
 
 i2c = I2C(id=0, scl=Pin(9), sda=Pin(8), freq=10000)
+devices = i2c.scan()
 
-bme = BME280.BME280(i2c=i2c, addr=0x77)
-distSensor = PiicoDev_VL53L1X()
-
+if len(devices) == 0:
+    print("No i2c device !")
+    distance = 0
+    distSensor_available = False
+    bme_available = False
+else:
+    print('i2c devices found:',len(devices))
+    bme = BME280.BME280(i2c=i2c, addr=0x77)
+    distSensor = PiicoDev_VL53L1X()
+    distSensor_available = True
+    bme_available = True
+    
 irq = 0
 interrupt_flag = 0
 debounce_time = 0
@@ -56,22 +66,23 @@ int2.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(11))
 int3 = Pin(12, Pin.IN,Pin.PULL_UP) #down
 int3.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(12))
 
-int4 = Pin(13, Pin.IN,Pin.PULL_UP) #10%
+int4 = Pin(13, Pin.IN,Pin.PULL_UP) #Vent
 int4.irq(trigger=Pin.IRQ_FALLING, handler=lambda a:handle_interrupt(13))
 
 
 # Hardware definitions
 led = Pin("LED", Pin.OUT, value=1)
-pin_stop = Pin(18, Pin.OUT, value=0)
+pin_door = Pin(18, Pin.OUT, value=0)
+pin_relay = Pin(20, Pin.OUT, value=0)
 pin_light = Pin(22, Pin.OUT, value=0)
 adcpin = 4
 sensor = machine.ADC(adcpin)
 
 door_distance=0
 vent_val=80
-fifty_percent_val=48
+#fifty_percent_val=48
+#readings=[]
 MAX_TIMEOUT=30
-readings=[]
 current_position=0
 button_hold_time=1.5
 current_string="Current position is "
@@ -113,27 +124,41 @@ html = """<!DOCTYPE html><html>
 
         
 def ReadTemperature():
-    adc_value = sensor.read_u16()
-    volt = (3.3/65535) * adc_value
-    temperature = 27 - (volt - 0.706) / 0.001721
-    return round(temperature, 1)
-
+    if bme_available:
+        try:
+            adc_value = sensor.read_u16()
+            volt = (3.3/65535) * adc_value
+            temperature = 27 - (volt - 0.706) / 0.001721
+            return round(temperature, 1)
+        except RuntimeError:
+            print("BME sensor not detected!")
+            return 0
+    else:
+        return 0
+    
+    
 def celsius_to_fahrenheit(temp_celsius): 
     temp_fahrenheit = temp_celsius * (9/5) + 32 
     return round(temp_fahrenheit,1)
 
-
- 
-def average_of_list(readings):
-  if not readings:
-    return 0  # Return 0 if the list is empty
-    return sum(readings) / len(readings)
+#def average_of_list(readings):
+  #if not readings:
+    #return 0  # Return 0 if the list is empty
+    #return sum(readings) / len(readings)
 
 def VL53L1X():
-    distance = distSensor.read()
-    distance = distance * .0393701
-    #print(distance)
-    return distance
+    if distSensor_available:    
+        try:
+            distance = distSensor.read()
+            distance = distance * .0393701
+            #print(distance)
+            return distance
+        
+        except RuntimeError:
+            print("Distance sensor not detected!")
+            return 0       
+    else:
+        return 0
 
 def blink_led(frequency = 0.5, num_blinks = 3):
     for _ in range(num_blinks):
@@ -143,26 +168,28 @@ def blink_led(frequency = 0.5, num_blinks = 3):
         time.sleep(frequency)
 
 def control_door(cmd):
+    pin_relay.on()
+    
     if cmd == 'stop':
-        pin_stop.on()
+        pin_door.on()
         led.on()
         time.sleep(button_hold_time)
         led.off()
-        pin_stop.off()
+        pin_door.off()
 
     if cmd == 'up':
-        pin_stop.on()
+        pin_door.on()
         led.on()
         time.sleep(button_hold_time)
         led.off()
-        pin_stop.off()
+        pin_door.off()
 
     if cmd == 'down':
-        pin_stop.on()
+        pin_door.on()
         led.on()
         time.sleep(button_hold_time)
         led.off()
-        pin_stop.off()
+        pin_door.off()
 
     if cmd == 'light':
         pin_light.on()
@@ -170,10 +197,13 @@ def control_door(cmd):
         time.sleep(button_hold_time)
         led.off()
         pin_light.off()
-  
+        
+    pin_relay.off()
+      
 def pin_control_door(pin_cmd):
     current_position = VL53L1X()
     print(current_string + str(current_position))
+    
     if pin_cmd == 10:
         control_door('light')
       
@@ -226,6 +256,7 @@ def pin_control_door(pin_cmd):
                 control_door('stop')
                 led.off()
                 
+      
 async def connect_to_wifi():
     wlan.active(True)
     wlan.config(pm = 0xa11140)  # Disable powersave mode
@@ -269,81 +300,85 @@ async def serve_client(reader, writer):
     #cmd_firmware = request.find('DOOR=UD')
     
     # Carry out a command if it is found (found at index: 8)
-    current_position = VL53L1X()
-    if current_position <= 40:
-        garage_status = "Open"
-    elif current_position >= 85:
-        garage_status = "Closed"
-    elif current_position >= 40 and current_position <= 85:    
-        garage_status = "Vented"
-        
-        
-    print(current_string + str(current_position))
-    temperatureC = ReadTemperature()
-    temperatureF = celsius_to_fahrenheit(temperatureC)
-    hum = bme.humidity
-    hum = float(hum[:-1])
-    hum = f"{hum:.1f}"
-    tempF = (bme.read_temperature()/100) * (9/5) + 32
-    tempF = 'Temp ' + str(round(tempF, 1)) + ' &deg;F<br>'
-    tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
-
-    response = html % tempF      #temperatureF
+    if bme_available:
+        current_position = VL53L1X()
+        if current_position <= 40:
+            garage_status = "Open"
+        elif current_position >= 85:
+            garage_status = "Closed"
+        elif current_position >= 40 and current_position <= 85:    
+            garage_status = "Vented"
+            
+            
+        print(current_string + str(current_position))
+        temperatureC = ReadTemperature()
+        temperatureF = celsius_to_fahrenheit(temperatureC)
+        hum = bme.humidity
+        hum = float(hum[:-1])
+        hum = f"{hum:.1f}"
+        tempF = (bme.read_temperature()/100) * (9/5) + 32
+        tempF = 'Temp ' + str(round(tempF, 1)) + ' &deg;F<br>'
+        tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
+        response = html % tempF
+    else:    
+        response = html      #temperatureF
+    
+    
     writer.write('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
     writer.write(response)
-    
-    if cmd_up == 8:
-        control_door('up')
-        time.sleep(2)
-        if VL53L1X() >= current_position:
-            control_door('stop')
-            time.sleep(3)
+    if bme_available:
+        if cmd_up == 8:
             control_door('up')
-    elif cmd_down == 8:
-        control_door('down')
-        time.sleep(2)
-        if VL53L1X() <= current_position:
-            control_door('stop')
-            time.sleep(3)
-            control_door('down')        
-    elif cmd_10 == 8:
-        start_time = time.time()
-        if VL53L1X() < vent_val:
+            time.sleep(2)
+            if VL53L1X() >= current_position:
+                control_door('stop')
+                time.sleep(3)
+                control_door('up')
+        elif cmd_down == 8:
             control_door('down')
             time.sleep(2)
-            if VL53L1X() < current_position:
+            if VL53L1X() <= current_position:
                 control_door('stop')
                 time.sleep(3)
+                control_door('down')        
+        elif cmd_10 == 8:
+            start_time = time.time()
+            if VL53L1X() < vent_val:
                 control_door('down')
-            time_delta = time.time() - start_time
-            while VL53L1X() <= vent_val and time_delta <= MAX_TIMEOUT:
+                time.sleep(2)
+                if VL53L1X() < current_position:
+                    control_door('stop')
+                    time.sleep(3)
+                    control_door('down')
                 time_delta = time.time() - start_time
-                led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
-            else:
-                control_door('stop')
-                led.off()
-        elif VL53L1X() > vent_val:
-            time_delta = time.time() - start_time
-            control_door('up')
-            time.sleep(2)
-            if VL53L1X() > current_position:
-                control_door('stop')
-                time.sleep(3)
-                control_door('up')            
-            while VL53L1X() >= vent_val and time_delta <= MAX_TIMEOUT:
+                while VL53L1X() <= vent_val and time_delta <= MAX_TIMEOUT:
+                    time_delta = time.time() - start_time
+                    led.on()
+                    print(current_string + str(VL53L1X()) + " of " + str(vent_val))
+                else:
+                    control_door('stop')
+                    led.off()
+            elif VL53L1X() > vent_val:
                 time_delta = time.time() - start_time
-                led.on()
-                print(current_string + str(VL53L1X()) + " of " + str(vent_val))
-            else:
-                control_door('stop')
-                led.off()
-    elif cmd_light == 8:
-        control_door('light')
-    #elif cmd_firmware == 8:
-        #firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
-        #ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
-        #ota_updater.download_and_install_update_if_available()
+                control_door('up')
+                time.sleep(2)
+                if VL53L1X() > current_position:
+                    control_door('stop')
+                    time.sleep(3)
+                    control_door('up')            
+                while VL53L1X() >= vent_val and time_delta <= MAX_TIMEOUT:
+                    time_delta = time.time() - start_time
+                    led.on()
+                    print(current_string + str(VL53L1X()) + " of " + str(vent_val))
+                else:
+                    control_door('stop')
+                    led.off()
+        elif cmd_light == 8:
+            control_door('light')
+        #elif cmd_firmware == 8:
+            #firmware_url = "https://raw.githubusercontent.com/RLF62/ota_garage_door_opener/"
+            #ota_updater = OTAUpdater(ssid,password,firmware_url,"main.py")
+            #ota_updater.download_and_install_update_if_available()
 
     await writer.drain()
     await writer.wait_closed()
