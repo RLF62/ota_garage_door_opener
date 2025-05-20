@@ -7,6 +7,7 @@ Adapted from examples in: https://datasheets.raspberrypi.com/picow/connecting-to
 import os
 import json
 import time
+import ntptime
 import utime
 import network
 import uasyncio as asyncio
@@ -77,6 +78,7 @@ pin_relay = Pin(20, Pin.OUT, value=0)
 pin_light = Pin(22, Pin.OUT, value=0)
 adcpin = 4
 sensor = machine.ADC(adcpin)
+rtc = machine.RTC()
 
 door_distance=0
 vent_val=80
@@ -281,8 +283,11 @@ async def connect_to_wifi():
         print('connected')
         status = wlan.ifconfig()
         print('ip = ' + status[0])
-
-
+        ntptime.settime()
+        #print(time.localtime())
+     
+            
+            
 async def serve_client(reader, writer):
     print("Client connected")
     request_line = await reader.readline()
@@ -309,7 +314,19 @@ async def serve_client(reader, writer):
         elif current_position >= 40 and current_position <= 85:    
             garage_status = "Vented"
             
+        #print(time.localtime())
+        #dstadjust = 0
+
+        local_date = (time.localtime()[1], "-" ,time.localtime()[2], "-" ,time.localtime()[0])
+        if time.localtime()[3] > 12:
+            local_hour = time.localtime()[3] - 12
+            local_am_pm = 'PM'
+        else:
+            local_am_pm = 'AM'
+            local_hour = time.localtime()[3]
             
+
+        local_time = str(local_hour) + ":" + str("%02d" % (time.localtime()[4]),) + " " + local_am_pm
         print(current_string + str(current_position))
         temperatureC = ReadTemperature()
         temperatureF = celsius_to_fahrenheit(temperatureC)
@@ -319,6 +336,7 @@ async def serve_client(reader, writer):
         tempF = (bme.read_temperature()/100) * (9/5) + 32
         tempF = 'Temp ' + str(round(tempF, 1)) + ' &deg;F<br>'
         tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
+        tempF = tempF + '<br>' + str(local_time)
         response = html % tempF
     else:    
         response = html      #temperatureF
@@ -421,3 +439,4 @@ try:
 
 finally:
     asyncio.new_event_loop()
+
