@@ -317,7 +317,7 @@ async def serve_client(reader, writer):
         #print(time.localtime())
         #dstadjust = 0
 
-        local_date = (time.localtime()[1], "-" ,time.localtime()[2], "-" ,time.localtime()[0])
+        local_date = str(time.localtime()[1]) + "/" + str(time.localtime()[2]) + "/" + str(time.localtime()[0])
         if time.localtime()[3] > 12:
             local_hour = time.localtime()[3] - 12
             local_am_pm = 'PM'
@@ -335,8 +335,8 @@ async def serve_client(reader, writer):
         hum = f"{hum:.1f}"
         tempF = (bme.read_temperature()/100) * (9/5) + 32
         tempF = 'Temp ' + str(round(tempF, 1)) + ' &deg;F<br>'
-        tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) 
-        tempF = tempF + '<br>' + str(local_time)
+        tempF = tempF + 'Humidity ' + str(hum) + ' %<br>' + '<br>Door is: ' + garage_status +  '<br>Version: ' + str(current_version) + '<br>'
+        tempF = tempF + '<br>' + str(local_time) + '<br>' + str(local_date)
         response = html % tempF
     else:    
         response = html      #temperatureF
