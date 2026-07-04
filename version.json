@@ -1,3 +1,5 @@
 {
-  "version": 8
+  "version": "1.0.1",
+  "file": "main.py",
+  "notes": "Test Pico UART update"
 }
