@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.2-uart-buffer-fix"
+FW_VERSION = "1.0.3-uart-buffer-fix"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
