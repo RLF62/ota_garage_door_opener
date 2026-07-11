@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.3-uart-buffer-fix"
+FW_VERSION = "1.0.3-uart-self-recovery"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -354,6 +354,16 @@ uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
 _uart_rx_buffer = b""
 MAX_UART_BUFFER = 16384
 
+# UART receive self-recovery settings.
+UART_PARTIAL_LINE_TIMEOUT_MS = 1500
+UART_RECOVERY_COOLDOWN_MS = 1000
+_uart_partial_since_ms = None
+_uart_last_rx_ms = utime.ticks_ms()
+_uart_last_recovery_ms = 0
+_uart_error_count = 0
+_uart_recovery_count = 0
+_commands_processed = 0
+
 # I2C pins (RP2040)
 I2C_ID = 0
 SCL_PIN_NUM = 9
@@ -374,6 +384,35 @@ def dbg(msg):
     try:
         uart.write(ujson.dumps({"dbg": msg}) + "\n")
     except:
+        pass
+
+
+def send_ack(command, status="accepted", **extra):
+    """Acknowledge commands so the Pi can verify the Pico receive path."""
+    try:
+        payload = {
+            "ack": str(command).lower(),
+            "status": status,
+            "ms": utime.ticks_ms(),
+        }
+        for k, v in extra.items():
+            payload[k] = v
+        uart.write(ujson.dumps(payload) + "\n")
+    except Exception:
+        pass
+
+
+def send_uart_health(reason="periodic"):
+    try:
+        uart.write(ujson.dumps({
+            "uart_health": reason,
+            "rx_errors": _uart_error_count,
+            "recoveries": _uart_recovery_count,
+            "commands_processed": _commands_processed,
+            "rx_buffer_len": len(_uart_rx_buffer),
+            "ms": utime.ticks_ms(),
+        }) + "\n")
+    except Exception:
         pass
 
 
@@ -572,6 +611,8 @@ LOOP_SLEEP_S = 0.05
 # Environmental period: 60 seconds
 ENV_PERIOD_S = 60.0
 _last_env_ts_ms = 0
+_last_uart_health_ms = 0
+UART_HEALTH_PERIOD_MS = 60000
 
 
 # ----------------------------
@@ -661,7 +702,7 @@ def pulse_motor_for_stop():
 
 
 def stop_start_trigger():
-    global stop_command, abort_motion, pending_command
+    global stop_command, abort_motion, pending_command, _commands_processed
     send_event("wall_stop")
     stop_command = True
     abort_motion = True
@@ -830,7 +871,7 @@ def handle_command(cmd):
     Handles commands from the Pi Zero/web app.
     Accepts: open, close, vent, stop, light
     """
-    global stop_command, abort_motion, pending_command
+    global stop_command, abort_motion, pending_command, _commands_processed
 
     if cmd is None:
         return
@@ -852,15 +893,24 @@ def handle_command(cmd):
         stop_command = True
         abort_motion = True
         pending_command = None
+        _commands_processed += 1
+        send_ack(cmd)
 
     elif cmd in ("open", "close", "vent"):
         send_event("app_" + cmd)
         abort_motion = False
         pending_command = cmd
+        _commands_processed += 1
+        send_ack(cmd)
 
     elif cmd == "light":
         send_event("app_light")
         light_turn_on_off()
+        _commands_processed += 1
+        send_ack(cmd)
+
+    else:
+        send_ack(cmd, status="ignored", reason="unknown_command")
 
 
 # ----------------------------
@@ -942,8 +992,59 @@ def _process_uart_line(line_str):
         handle_command(line_str)
 
 
+def rebuild_uart(reason="unknown"):
+    """Reinitialize UART0 and clear only the damaged receive state."""
+    global uart, _uart_rx_buffer, _uart_partial_since_ms
+    global _uart_last_rx_ms, _uart_last_recovery_ms
+    global _uart_error_count, _uart_recovery_count
+
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _uart_last_recovery_ms) < UART_RECOVERY_COOLDOWN_MS:
+        return False
+
+    _uart_last_recovery_ms = now
+    _uart_error_count += 1
+
+    try:
+        try:
+            uart.deinit()
+        except Exception:
+            pass
+
+        time.sleep_ms(50)
+        uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
+        _uart_rx_buffer = b""
+        _uart_partial_since_ms = None
+        _uart_last_rx_ms = utime.ticks_ms()
+        _uart_recovery_count += 1
+        send_uart_health("recovered:" + str(reason))
+        return True
+    except Exception as e:
+        try:
+            print("UART rebuild failed:", e)
+        except Exception:
+            pass
+        return False
+
+
+def service_uart_partial_timeout():
+    """Discard a line that never receives a newline instead of staying wedged forever."""
+    global _uart_rx_buffer, _uart_partial_since_ms, _uart_error_count
+
+    if not _uart_rx_buffer or _uart_partial_since_ms is None:
+        return
+
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _uart_partial_since_ms) > UART_PARTIAL_LINE_TIMEOUT_MS:
+        dropped = len(_uart_rx_buffer)
+        _uart_rx_buffer = b""
+        _uart_partial_since_ms = None
+        _uart_error_count += 1
+        send_uart_health("partial_timeout_dropped_" + str(dropped))
+
+
 def check_uart():
-    global _uart_rx_buffer
+    global _uart_rx_buffer, _uart_partial_since_ms, _uart_last_rx_ms
 
     # Read raw bytes and only process complete newline-terminated lines.
     # uart.readline() can return partial data on MicroPython when bytes arrive
@@ -953,24 +1054,38 @@ def check_uart():
             chunk = uart.read()
             if not chunk:
                 break
+
+            now = utime.ticks_ms()
+            _uart_last_rx_ms = now
+            if not _uart_rx_buffer:
+                _uart_partial_since_ms = now
             _uart_rx_buffer += chunk
 
             # Prevent a damaged/no-newline stream from eating all RAM.
             if len(_uart_rx_buffer) > MAX_UART_BUFFER:
+                dropped = len(_uart_rx_buffer)
                 _uart_rx_buffer = b""
+                _uart_partial_since_ms = None
                 if UPDATE_MODE:
                     send_update_status("failed", reason="rx_buffer_overflow")
+                else:
+                    send_uart_health("overflow_dropped_" + str(dropped))
+                rebuild_uart("rx_buffer_overflow")
                 break
 
             while b"\n" in _uart_rx_buffer:
                 line, _uart_rx_buffer = _uart_rx_buffer.split(b"\n", 1)
+                _uart_partial_since_ms = utime.ticks_ms() if _uart_rx_buffer else None
                 try:
                     line_str = line.decode().strip()
                 except Exception:
                     line_str = ""
                 _process_uart_line(line_str)
-    except Exception:
-        pass
+
+        service_uart_partial_timeout()
+
+    except Exception as e:
+        rebuild_uart("check_exception:" + str(e))
 
 # ----------------------------
 # Movement control (robust comparisons)
@@ -1219,6 +1334,11 @@ while True:
 
     # 60s environmental updates (temp/humidity only)
     now_ms = utime.ticks_ms()
+
+    # Periodic UART health record for diagnosing one-way communication failures.
+    if utime.ticks_diff(now_ms, _last_uart_health_ms) >= UART_HEALTH_PERIOD_MS:
+        _last_uart_health_ms = now_ms
+        send_uart_health("periodic")
     if utime.ticks_diff(now_ms, _last_env_ts_ms) >= int(ENV_PERIOD_S * 1000):
         _last_env_ts_ms = now_ms
         send_environmental_data()
