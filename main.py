@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.6-uart-self-recovery"
+FW_VERSION = "1.0.7-lidar-jump-filter"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -354,16 +354,6 @@ uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
 _uart_rx_buffer = b""
 MAX_UART_BUFFER = 16384
 
-# UART receive self-recovery settings.
-UART_PARTIAL_LINE_TIMEOUT_MS = 1500
-UART_RECOVERY_COOLDOWN_MS = 1000
-_uart_partial_since_ms = None
-_uart_last_rx_ms = utime.ticks_ms()
-_uart_last_recovery_ms = 0
-_uart_error_count = 0
-_uart_recovery_count = 0
-_commands_processed = 0
-
 # I2C pins (RP2040)
 I2C_ID = 0
 SCL_PIN_NUM = 9
@@ -384,35 +374,6 @@ def dbg(msg):
     try:
         uart.write(ujson.dumps({"dbg": msg}) + "\n")
     except:
-        pass
-
-
-def send_ack(command, status="accepted", **extra):
-    """Acknowledge commands so the Pi can verify the Pico receive path."""
-    try:
-        payload = {
-            "ack": str(command).lower(),
-            "status": status,
-            "ms": utime.ticks_ms(),
-        }
-        for k, v in extra.items():
-            payload[k] = v
-        uart.write(ujson.dumps(payload) + "\n")
-    except Exception:
-        pass
-
-
-def send_uart_health(reason="periodic"):
-    try:
-        uart.write(ujson.dumps({
-            "uart_health": reason,
-            "rx_errors": _uart_error_count,
-            "recoveries": _uart_recovery_count,
-            "commands_processed": _commands_processed,
-            "rx_buffer_len": len(_uart_rx_buffer),
-            "ms": utime.ticks_ms(),
-        }) + "\n")
-    except Exception:
         pass
 
 
@@ -606,13 +567,25 @@ MAX_TIMEOUT = 30
 _last_good_distance_in = None
 mapped = 0.0
 
+# LIDAR sanity filter. The physical door target should remain close to the
+# configured open/closed range. Readings outside this envelope are discarded.
+LIDAR_MIN_VALID_IN = 5.0
+LIDAR_MAX_VALID_IN = 140.0
+
+# A single reading cannot legitimately jump this far between samples. Large
+# changes must repeat closely before they are accepted, allowing genuine door
+# movement/reacquisition while rejecting isolated values such as 202 inches.
+LIDAR_MAX_SINGLE_JUMP_IN = 18.0
+LIDAR_JUMP_CONFIRM_TOLERANCE_IN = 4.0
+LIDAR_JUMP_CONFIRM_COUNT = 3
+_lidar_jump_candidate_in = None
+_lidar_jump_candidate_count = 0
+
 LOOP_SLEEP_S = 0.05
 
 # Environmental period: 60 seconds
 ENV_PERIOD_S = 60.0
 _last_env_ts_ms = 0
-_last_uart_health_ms = 0
-UART_HEALTH_PERIOD_MS = 60000
 
 
 # ----------------------------
@@ -702,7 +675,7 @@ def pulse_motor_for_stop():
 
 
 def stop_start_trigger():
-    global stop_command, abort_motion, pending_command, _commands_processed
+    global stop_command, abort_motion, pending_command
     send_event("wall_stop")
     stop_command = True
     abort_motion = True
@@ -825,6 +798,7 @@ def send_environmental_data():
 def get_position(sample_count=3, delay=0.001, settle_ms=8):
     global mapped, _last_good_distance_in
     global _last_lidar_good_ms, _last_lidar_value_in
+    global _lidar_jump_candidate_in, _lidar_jump_candidate_count
 
     valid_readings = []
     for _ in range(sample_count):
@@ -834,28 +808,66 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
             continue
 
         distance_in = distance_cm / 2.54
-        if distance_cm > 0 and distance_in > 0:
+
+        # Reject impossible garage-door measurements before averaging. This
+        # blocks the repeatable bogus ~202-inch reading from reaching motion,
+        # vent, UART, or HTML position logic.
+        if LIDAR_MIN_VALID_IN <= distance_in <= LIDAR_MAX_VALID_IN:
             valid_readings.append(distance_in)
 
         time.sleep(delay)
 
     if valid_readings:
-        avg_in = sum(valid_readings) / len(valid_readings)
+        # Median is more resistant than an average to one bad sample.
+        valid_readings.sort()
+        count = len(valid_readings)
+        if count & 1:
+            measured_in = valid_readings[count // 2]
+        else:
+            measured_in = (valid_readings[(count // 2) - 1] + valid_readings[count // 2]) / 2.0
 
-        m = adafruit_simplemath.map_range(avg_in, DOOR_OPEN_IN, DOOR_CLOSED_IN, 0, 100)
+        accepted_in = measured_in
+
+        if _last_good_distance_in is not None:
+            jump = abs(measured_in - _last_good_distance_in)
+
+            if jump > LIDAR_MAX_SINGLE_JUMP_IN:
+                # Do not accept a large discontinuity until several successive
+                # calls report approximately the same new distance.
+                if (_lidar_jump_candidate_in is not None and
+                        abs(measured_in - _lidar_jump_candidate_in) <= LIDAR_JUMP_CONFIRM_TOLERANCE_IN):
+                    _lidar_jump_candidate_count += 1
+                    _lidar_jump_candidate_in = (
+                        (_lidar_jump_candidate_in * (_lidar_jump_candidate_count - 1)) + measured_in
+                    ) / _lidar_jump_candidate_count
+                else:
+                    _lidar_jump_candidate_in = measured_in
+                    _lidar_jump_candidate_count = 1
+
+                if _lidar_jump_candidate_count < LIDAR_JUMP_CONFIRM_COUNT:
+                    return _last_good_distance_in
+
+                accepted_in = _lidar_jump_candidate_in
+                _lidar_jump_candidate_in = None
+                _lidar_jump_candidate_count = 0
+            else:
+                _lidar_jump_candidate_in = None
+                _lidar_jump_candidate_count = 0
+
+        m = adafruit_simplemath.map_range(accepted_in, DOOR_OPEN_IN, DOOR_CLOSED_IN, 0, 100)
         if m < 0:
             m = 0.0
         elif m > 100:
             m = 100.0
 
         mapped = float(m)
-        _last_good_distance_in = float(avg_in)
+        _last_good_distance_in = float(accepted_in)
 
         _last_lidar_good_ms = utime.ticks_ms()
-        _last_lidar_value_in = float(avg_in)
+        _last_lidar_value_in = float(accepted_in)
 
-        send_position(mapped, avg_in)
-        return avg_in
+        send_position(mapped, accepted_in)
+        return accepted_in
 
     if _last_good_distance_in is not None:
         return _last_good_distance_in
@@ -871,7 +883,7 @@ def handle_command(cmd):
     Handles commands from the Pi Zero/web app.
     Accepts: open, close, vent, stop, light
     """
-    global stop_command, abort_motion, pending_command, _commands_processed
+    global stop_command, abort_motion, pending_command
 
     if cmd is None:
         return
@@ -893,24 +905,15 @@ def handle_command(cmd):
         stop_command = True
         abort_motion = True
         pending_command = None
-        _commands_processed += 1
-        send_ack(cmd)
 
     elif cmd in ("open", "close", "vent"):
         send_event("app_" + cmd)
         abort_motion = False
         pending_command = cmd
-        _commands_processed += 1
-        send_ack(cmd)
 
     elif cmd == "light":
         send_event("app_light")
         light_turn_on_off()
-        _commands_processed += 1
-        send_ack(cmd)
-
-    else:
-        send_ack(cmd, status="ignored", reason="unknown_command")
 
 
 # ----------------------------
@@ -992,59 +995,8 @@ def _process_uart_line(line_str):
         handle_command(line_str)
 
 
-def rebuild_uart(reason="unknown"):
-    """Reinitialize UART0 and clear only the damaged receive state."""
-    global uart, _uart_rx_buffer, _uart_partial_since_ms
-    global _uart_last_rx_ms, _uart_last_recovery_ms
-    global _uart_error_count, _uart_recovery_count
-
-    now = utime.ticks_ms()
-    if utime.ticks_diff(now, _uart_last_recovery_ms) < UART_RECOVERY_COOLDOWN_MS:
-        return False
-
-    _uart_last_recovery_ms = now
-    _uart_error_count += 1
-
-    try:
-        try:
-            uart.deinit()
-        except Exception:
-            pass
-
-        time.sleep_ms(50)
-        uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
-        _uart_rx_buffer = b""
-        _uart_partial_since_ms = None
-        _uart_last_rx_ms = utime.ticks_ms()
-        _uart_recovery_count += 1
-        send_uart_health("recovered:" + str(reason))
-        return True
-    except Exception as e:
-        try:
-            print("UART rebuild failed:", e)
-        except Exception:
-            pass
-        return False
-
-
-def service_uart_partial_timeout():
-    """Discard a line that never receives a newline instead of staying wedged forever."""
-    global _uart_rx_buffer, _uart_partial_since_ms, _uart_error_count
-
-    if not _uart_rx_buffer or _uart_partial_since_ms is None:
-        return
-
-    now = utime.ticks_ms()
-    if utime.ticks_diff(now, _uart_partial_since_ms) > UART_PARTIAL_LINE_TIMEOUT_MS:
-        dropped = len(_uart_rx_buffer)
-        _uart_rx_buffer = b""
-        _uart_partial_since_ms = None
-        _uart_error_count += 1
-        send_uart_health("partial_timeout_dropped_" + str(dropped))
-
-
 def check_uart():
-    global _uart_rx_buffer, _uart_partial_since_ms, _uart_last_rx_ms
+    global _uart_rx_buffer
 
     # Read raw bytes and only process complete newline-terminated lines.
     # uart.readline() can return partial data on MicroPython when bytes arrive
@@ -1054,38 +1006,24 @@ def check_uart():
             chunk = uart.read()
             if not chunk:
                 break
-
-            now = utime.ticks_ms()
-            _uart_last_rx_ms = now
-            if not _uart_rx_buffer:
-                _uart_partial_since_ms = now
             _uart_rx_buffer += chunk
 
             # Prevent a damaged/no-newline stream from eating all RAM.
             if len(_uart_rx_buffer) > MAX_UART_BUFFER:
-                dropped = len(_uart_rx_buffer)
                 _uart_rx_buffer = b""
-                _uart_partial_since_ms = None
                 if UPDATE_MODE:
                     send_update_status("failed", reason="rx_buffer_overflow")
-                else:
-                    send_uart_health("overflow_dropped_" + str(dropped))
-                rebuild_uart("rx_buffer_overflow")
                 break
 
             while b"\n" in _uart_rx_buffer:
                 line, _uart_rx_buffer = _uart_rx_buffer.split(b"\n", 1)
-                _uart_partial_since_ms = utime.ticks_ms() if _uart_rx_buffer else None
                 try:
                     line_str = line.decode().strip()
                 except Exception:
                     line_str = ""
                 _process_uart_line(line_str)
-
-        service_uart_partial_timeout()
-
-    except Exception as e:
-        rebuild_uart("check_exception:" + str(e))
+    except Exception:
+        pass
 
 # ----------------------------
 # Movement control (robust comparisons)
@@ -1334,13 +1272,9 @@ while True:
 
     # 60s environmental updates (temp/humidity only)
     now_ms = utime.ticks_ms()
-
-    # Periodic UART health record for diagnosing one-way communication failures.
-    if utime.ticks_diff(now_ms, _last_uart_health_ms) >= UART_HEALTH_PERIOD_MS:
-        _last_uart_health_ms = now_ms
-        send_uart_health("periodic")
     if utime.ticks_diff(now_ms, _last_env_ts_ms) >= int(ENV_PERIOD_S * 1000):
         _last_env_ts_ms = now_ms
         send_environmental_data()
 
     time.sleep(LOOP_SLEEP_S)
+
