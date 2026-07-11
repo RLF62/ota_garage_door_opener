@@ -1,5 +1,5 @@
 {
-  "version": "1.0.6-uart-buffer-fix",
+  "version": "1.0.7-lidar-jump-filter",
   "file": "main.py",
   "notes": "Pico UART update"
 }
