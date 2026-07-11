@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.7-lidar-jump-filter"
+FW_VERSION = "1.0.8-lidar-filter-vent-status"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -557,6 +557,11 @@ DOOR_CLOSED_IN = 108
 DOOR_OPEN_IN = 11
 DOOR_VENT_IN = 75
 
+# Clear a remembered vent state once the measured door position moves away
+# from the configured vent location. This also handles movement from a vehicle
+# remote, where the Pico never receives an OPEN or CLOSE command.
+VENT_STATUS_EXIT_DEADBAND_IN = 4.0
+
 LIGHT_LEVEL_ON = 30000
 MAX_TIMEOUT = 30
 
@@ -796,7 +801,7 @@ def send_environmental_data():
 # Position read (returns last good instead of None)
 # ----------------------------
 def get_position(sample_count=3, delay=0.001, settle_ms=8):
-    global mapped, _last_good_distance_in
+    global mapped, _last_good_distance_in, vent_status
     global _last_lidar_good_ms, _last_lidar_value_in
     global _lidar_jump_candidate_in, _lidar_jump_candidate_count
 
@@ -867,6 +872,17 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
         _last_lidar_value_in = float(accepted_in)
 
         send_position(mapped, accepted_in)
+
+        # vent_status used to remain latched at 1 until an OPEN/CLOSE command
+        # arrived from the Pi. A vehicle remote bypasses the Pi, so the HTML
+        # could continue to say VENTED after the door had opened or closed.
+        # Clear that remembered state as soon as a confirmed LIDAR position is
+        # safely outside the vent zone. Do not automatically set it here, which
+        # avoids briefly reporting VENTED while a moving door passes the target.
+        if vent_status == 1 and abs(accepted_in - DOOR_VENT_IN) > VENT_STATUS_EXIT_DEADBAND_IN:
+            vent_status = 0
+            send_vent_status(vent_status)
+
         return accepted_in
 
     if _last_good_distance_in is not None:
@@ -1277,4 +1293,3 @@ while True:
         send_environmental_data()
 
     time.sleep(LOOP_SLEEP_S)
-
