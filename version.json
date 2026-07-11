@@ -1,5 +1,5 @@
 {
-  "version": "1.0.8-lidar-filter-vent-status",
+  "version": "1.0.9-lidar-filter-vent-latch-fix",
   "file": "main.py",
   "notes": "Pico UART update"
 }
