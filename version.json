@@ -1,5 +1,5 @@
 {
-  "version": "1.0.3-uart-self-recoveryx",
+  "version": "1.0.5-uart-buffer-fix",
   "file": "main.py",
   "notes": "Pico UART update"
 }
