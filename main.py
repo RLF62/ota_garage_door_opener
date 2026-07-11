@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.8-lidar-filter-vent-status"
+FW_VERSION = "1.0.9-lidar-filter-vent-latch-fix"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -1115,9 +1115,14 @@ def start_move(action):
             safe_motor()
 
     elif action == 'vent':
-        vent_status = 1
+        # Do not latch VENTED before the door reaches the target. The position
+        # reader correctly clears stale vent state while the door is away from
+        # the configured vent distance, so setting this early caused the final
+        # HTML status to remain a percentage such as 82% instead of VENTED.
+        vent_status = 0
 
         if abs(current_in - DOOR_VENT_IN) <= deadband:
+            vent_status = 1
             send_vent_status(vent_status)
             return
 
@@ -1150,6 +1155,7 @@ def start_move(action):
 
             if not abort_motion:
                 safe_motor()
+                vent_status = 1
                 send_vent_status(vent_status)
 
         elif p > DOOR_VENT_IN:
@@ -1176,6 +1182,7 @@ def start_move(action):
 
             if not abort_motion:
                 safe_motor()
+                vent_status = 1
                 send_vent_status(vent_status)
 
 
