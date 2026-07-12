@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.9-lidar-filter-vent-latch-fix"
+FW_VERSION = "1.0.10-safe-uart-recovery-lidar-vent"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -353,6 +353,15 @@ uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
 # Buffered UART receive prevents partial JSON lines during firmware updates.
 _uart_rx_buffer = b""
 MAX_UART_BUFFER = 16384
+
+# Conservative UART self-recovery. Recovery never runs merely because the Pi
+# is quiet, and partial-line cleanup is disabled during firmware updates.
+UART_PARTIAL_LINE_TIMEOUT_MS = 5000
+UART_RECOVERY_COOLDOWN_MS = 5000
+_uart_partial_since_ms = None
+_uart_last_recovery_ms = 0
+_uart_error_count = 0
+_uart_recovery_count = 0
 
 # I2C pins (RP2040)
 I2C_ID = 0
@@ -1011,35 +1020,119 @@ def _process_uart_line(line_str):
         handle_command(line_str)
 
 
-def check_uart():
-    global _uart_rx_buffer
+def send_uart_health(reason):
+    """Send a compact UART diagnostic message to the Pi."""
+    try:
+        uart.write(ujson.dumps({
+            "uart_health": reason,
+            "rx_errors": _uart_error_count,
+            "recoveries": _uart_recovery_count,
+            "rx_buffer_len": len(_uart_rx_buffer),
+            "ms": utime.ticks_ms(),
+        }) + "\n")
+    except Exception:
+        pass
 
-    # Read raw bytes and only process complete newline-terminated lines.
-    # uart.readline() can return partial data on MicroPython when bytes arrive
-    # slowly, which was causing bad_json during firmware transfer.
+
+def rebuild_uart(reason="unknown"):
+    """
+    Reinitialize UART only after an actual receive exception or buffer overflow.
+    Normal silence, delayed heartbeats, and ordinary partial chunks do not
+    trigger a UART rebuild. This avoids making HTML commands temporarily dead.
+    """
+    global uart, _uart_rx_buffer, _uart_partial_since_ms
+    global _uart_last_recovery_ms, _uart_error_count, _uart_recovery_count
+
+    if UPDATE_MODE:
+        return False
+
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _uart_last_recovery_ms) < UART_RECOVERY_COOLDOWN_MS:
+        return False
+
+    _uart_last_recovery_ms = now
+    _uart_error_count += 1
+
+    try:
+        try:
+            uart.deinit()
+        except Exception:
+            pass
+
+        time.sleep_ms(50)
+        uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=8192)
+        _uart_rx_buffer = b""
+        _uart_partial_since_ms = None
+        _uart_recovery_count += 1
+        send_uart_health("recovered:" + str(reason))
+        return True
+    except Exception as e:
+        try:
+            print("UART rebuild failed:", e)
+        except Exception:
+            pass
+        return False
+
+
+def service_uart_partial_timeout():
+    """Discard only a genuinely abandoned partial line; never during updates."""
+    global _uart_rx_buffer, _uart_partial_since_ms, _uart_error_count
+
+    if UPDATE_MODE or not _uart_rx_buffer or _uart_partial_since_ms is None:
+        return
+
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _uart_partial_since_ms) > UART_PARTIAL_LINE_TIMEOUT_MS:
+        dropped = len(_uart_rx_buffer)
+        _uart_rx_buffer = b""
+        _uart_partial_since_ms = None
+        _uart_error_count += 1
+        send_uart_health("partial_timeout_dropped_" + str(dropped))
+
+
+def check_uart():
+    global _uart_rx_buffer, _uart_partial_since_ms, _uart_error_count
+
+    # Process only complete newline-terminated messages. A partial line is kept
+    # for up to five seconds, which is long enough for normal commands and does
+    # not interfere with the UART firmware updater.
     try:
         while uart.any():
             chunk = uart.read()
             if not chunk:
                 break
+
+            if not _uart_rx_buffer:
+                _uart_partial_since_ms = utime.ticks_ms()
             _uart_rx_buffer += chunk
 
-            # Prevent a damaged/no-newline stream from eating all RAM.
             if len(_uart_rx_buffer) > MAX_UART_BUFFER:
+                dropped = len(_uart_rx_buffer)
                 _uart_rx_buffer = b""
+                _uart_partial_since_ms = None
+                _uart_error_count += 1
+
                 if UPDATE_MODE:
                     send_update_status("failed", reason="rx_buffer_overflow")
+                else:
+                    send_uart_health("overflow_dropped_" + str(dropped))
+                    rebuild_uart("rx_buffer_overflow")
                 break
 
             while b"\n" in _uart_rx_buffer:
                 line, _uart_rx_buffer = _uart_rx_buffer.split(b"\n", 1)
+                _uart_partial_since_ms = utime.ticks_ms() if _uart_rx_buffer else None
                 try:
                     line_str = line.decode().strip()
                 except Exception:
                     line_str = ""
                 _process_uart_line(line_str)
-    except Exception:
-        pass
+
+        service_uart_partial_timeout()
+
+    except Exception as e:
+        if not UPDATE_MODE:
+            rebuild_uart("check_exception:" + str(e))
 
 # ----------------------------
 # Movement control (robust comparisons)
