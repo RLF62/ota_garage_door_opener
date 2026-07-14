@@ -1,5 +1,5 @@
 {
-  "version": "1.0.10-safe-uart-recovery-lidar-vent",
+  "version": "1.0.11-safe-uart-recovery-lidar-auto-vent-status",
   "file": "main.py",
   "notes": "Pico UART update"
 }
