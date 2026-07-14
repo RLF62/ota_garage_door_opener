@@ -11,7 +11,7 @@ import adafruit_simplemath
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.10-safe-uart-recovery-lidar-vent"
+FW_VERSION = "1.0.11-safe-uart-recovery-lidar-auto-vent-status"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -569,6 +569,7 @@ DOOR_VENT_IN = 75
 # Clear a remembered vent state once the measured door position moves away
 # from the configured vent location. This also handles movement from a vehicle
 # remote, where the Pico never receives an OPEN or CLOSE command.
+VENT_STATUS_ENTER_DEADBAND_IN = 2.0
 VENT_STATUS_EXIT_DEADBAND_IN = 4.0
 
 LIGHT_LEVEL_ON = 30000
@@ -882,13 +883,16 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
 
         send_position(mapped, accepted_in)
 
-        # vent_status used to remain latched at 1 until an OPEN/CLOSE command
-        # arrived from the Pi. A vehicle remote bypasses the Pi, so the HTML
-        # could continue to say VENTED after the door had opened or closed.
-        # Clear that remembered state as soon as a confirmed LIDAR position is
-        # safely outside the vent zone. Do not automatically set it here, which
-        # avoids briefly reporting VENTED while a moving door passes the target.
-        if vent_status == 1 and abs(accepted_in - DOOR_VENT_IN) > VENT_STATUS_EXIT_DEADBAND_IN:
+        # Determine VENTED from the confirmed LIDAR distance, regardless of
+        # whether the door was moved by the app, wall control, or vehicle remote.
+        # A tighter enter window and wider exit window provide hysteresis so
+        # normal 1-inch LIDAR variation does not make the status flicker.
+        vent_error = abs(accepted_in - DOOR_VENT_IN)
+
+        if vent_status == 0 and vent_error <= VENT_STATUS_ENTER_DEADBAND_IN:
+            vent_status = 1
+            send_vent_status(vent_status)
+        elif vent_status == 1 and vent_error > VENT_STATUS_EXIT_DEADBAND_IN:
             vent_status = 0
             send_vent_status(vent_status)
 
