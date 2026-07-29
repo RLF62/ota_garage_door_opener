@@ -1,5 +1,5 @@
 {
-  "version": "1.0.11-safe-uart-recovery-lidar-auto-vent-status",
+  "version": "1.0.12-control-watchdog-safe-irq",
   "file": "main.py",
-  "notes": "Pico UART update"
+  "notes": "Safe button interrupts and Pico hardware watchdog"
 }
