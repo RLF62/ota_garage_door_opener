@@ -1,5 +1,5 @@
 {
-  "version": "1.0.12-control-watchdog-safe-irq",
+  "version": "1.0.13-control-watchdog-command-guard",
   "file": "main.py",
-  "notes": "Safe button interrupts and Pico hardware watchdog"
+  "notes": "Prevent duplicate motion commands while preserving safe interrupts and watchdog"
 }
