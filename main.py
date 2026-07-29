@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.12-control-watchdog-safe-irq"
+FW_VERSION = "1.0.13-control-watchdog-command-guard"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -349,6 +349,7 @@ _last_pi_reset_ms = 0
 stop_command = False
 abort_motion = False
 pending_command = None
+active_motion_command = None
 vent_status = 0
 
 
@@ -1347,11 +1348,11 @@ def service_button_events():
     if (mask & BUTTON_STOP_MASK) and _button_ready("stop", now):
         stop_start_trigger()
         return
-    if (mask & BUTTON_OPEN_MASK) and _button_ready("open", now):
+    if (mask & BUTTON_OPEN_MASK) and active_motion_command != "open" and _button_ready("open", now):
         enqueue_command("open")
-    if (mask & BUTTON_CLOSE_MASK) and _button_ready("close", now):
+    if (mask & BUTTON_CLOSE_MASK) and active_motion_command != "close" and _button_ready("close", now):
         enqueue_command("close")
-    if (mask & BUTTON_VENT_MASK) and _button_ready("vent", now):
+    if (mask & BUTTON_VENT_MASK) and active_motion_command != "vent" and _button_ready("vent", now):
         enqueue_command("vent")
     if (mask & BUTTON_LIGHT_MASK) and _button_ready("light", now):
         light_turn_on_off()
@@ -1475,7 +1476,11 @@ while True:
     if pending_command:
         cmd = pending_command
         pending_command = None
-        start_move(cmd)
+        active_motion_command = cmd
+        try:
+            start_move(cmd)
+        finally:
+            active_motion_command = None
 
     # Position updates for HTML simulation and status.
     get_position(sample_count=2, delay=0.001, settle_ms=8)
@@ -1490,3 +1495,4 @@ while True:
         send_environmental_data()
 
     time.sleep(LOOP_SLEEP_S)
+
