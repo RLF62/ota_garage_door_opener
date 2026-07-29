@@ -1495,4 +1495,3 @@ while True:
         send_environmental_data()
 
     time.sleep(LOOP_SLEEP_S)
-
