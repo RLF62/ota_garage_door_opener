@@ -1,4 +1,4 @@
-from machine import Pin, UART, Timer, I2C, ADC
+from machine import Pin, UART, I2C, ADC
 import machine
 import time
 import utime
@@ -8,10 +8,21 @@ import ubinascii
 import BME280
 import adafruit_simplemath
 
+# Started after hardware initialization. Calls made before then are harmless.
+wdt = None
+
+
+def feed_watchdog():
+    try:
+        if wdt is not None:
+            wdt.feed()
+    except Exception:
+        pass
+
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.11-safe-uart-recovery-lidar-auto-vent-status"
+FW_VERSION = "1.0.12-control-watchdog-safe-irq"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -228,6 +239,7 @@ class LidarLiteV4:
             time.sleep_ms(50)
 
         for _ in range(retries):
+            feed_watchdog()
             try:
                 # Trigger measurement
                 self._write_reg(0x00, 0x04)
@@ -235,6 +247,7 @@ class LidarLiteV4:
                 # Wait until not busy (status reg 0x01 bit0 clears)
                 t0 = time.ticks_ms()
                 while True:
+                    feed_watchdog()
                     status = self._read_u8(0x01)
                     if (status & 0x01) == 0:
                         break
@@ -333,12 +346,6 @@ _last_pi_reset_ms = 0
 # ----------------------------
 # Control flags
 # ----------------------------
-debounce_flags = {}
-debounce_timers = {}
-for name in ['open', 'close', 'vent', 'light', 'stop']:
-    debounce_flags[name] = False
-    debounce_timers[name] = Timer()
-
 stop_command = False
 abort_motion = False
 pending_command = None
@@ -606,10 +613,6 @@ _last_env_ts_ms = 0
 # ----------------------------
 # Debounce / actions
 # ----------------------------
-def clear_flag(name):
-    debounce_flags[name] = False
-
-
 def service_pulses():
     """
     Turns relay outputs off when their non-blocking hold time has expired.
@@ -662,8 +665,10 @@ def wait_ms_with_service(ms):
     """
     end_ms = utime.ticks_add(utime.ticks_ms(), ms)
     while utime.ticks_diff(end_ms, utime.ticks_ms()) > 0:
+        feed_watchdog()
         service_pulses()
         check_uart()
+        service_button_events()
         if abort_motion:
             break
         time.sleep_ms(10)
@@ -674,8 +679,10 @@ def wait_pulse_done_with_service():
     Wait until the motor pulse finishes while keeping UART/STOP responsive.
     """
     while _motor_pulse_active:
+        feed_watchdog()
         service_pulses()
         check_uart()
+        service_button_events()
         if abort_motion:
             break
         time.sleep_ms(10)
@@ -706,27 +713,6 @@ def enqueue_command(cmd):
     send_event("wall_" + cmd)
     abort_motion = False
     pending_command = cmd
-
-
-def debounce_handler(name, action_func):
-    def handler(pin):
-        if debounce_flags[name]:
-            return
-
-        if utime.ticks_diff(utime.ticks_ms(), _boot_ms) < BOOT_IGNORE_MS:
-            return
-
-        if not stable_low(pin, 40):
-            return
-
-        debounce_flags[name] = True
-        action_func()
-        debounce_timers[name].init(
-            mode=Timer.ONE_SHOT,
-            period=DEBOUNCE_MS,
-            callback=lambda t: clear_flag(name)
-        )
-    return handler
 
 
 def light_turn_on_off():
@@ -1236,7 +1222,9 @@ def start_move(action):
                 return
 
             while (time.time() - start_time) <= MAX_TIMEOUT and not abort_motion:
+                feed_watchdog()
                 check_uart()
+                service_button_events()
                 if abort_motion:
                     break
 
@@ -1263,7 +1251,9 @@ def start_move(action):
                 return
 
             while (time.time() - start_time) <= MAX_TIMEOUT and not abort_motion:
+                feed_watchdog()
                 check_uart()
+                service_button_events()
                 if abort_motion:
                     break
 
@@ -1286,11 +1276,99 @@ def start_move(action):
 # ----------------------------
 # Interrupt bindings
 # ----------------------------
-Pin(STOP_PIN, Pin.IN, Pin.PULL_UP).irq(trigger=Pin.IRQ_FALLING, handler=debounce_handler('stop', stop_start_trigger))
-Pin(OPEN_PIN, Pin.IN, Pin.PULL_UP).irq(trigger=Pin.IRQ_FALLING, handler=debounce_handler('open', lambda: enqueue_command('open')))
-Pin(CLOSE_PIN, Pin.IN, Pin.PULL_UP).irq(trigger=Pin.IRQ_FALLING, handler=debounce_handler('close', lambda: enqueue_command('close')))
-Pin(VENT_PIN, Pin.IN, Pin.PULL_UP).irq(trigger=Pin.IRQ_FALLING, handler=debounce_handler('vent', lambda: enqueue_command('vent')))
-Pin(LIGHT_PIN, Pin.IN, Pin.PULL_UP).irq(trigger=Pin.IRQ_FALLING, handler=debounce_handler('light', light_turn_on_off))
+# IRQ handlers must not sleep, allocate JSON, write UART, touch dictionaries,
+# or start timers. They only latch an edge; normal code performs the work.
+BUTTON_OPEN_MASK = 0x01
+BUTTON_CLOSE_MASK = 0x02
+BUTTON_VENT_MASK = 0x04
+BUTTON_LIGHT_MASK = 0x08
+BUTTON_STOP_MASK = 0x10
+
+_irq_pending_mask = 0
+_button_last_accept_ms = {
+    "open": 0,
+    "close": 0,
+    "vent": 0,
+    "light": 0,
+    "stop": 0,
+}
+
+
+def _irq_open(pin):
+    global _irq_pending_mask
+    _irq_pending_mask |= BUTTON_OPEN_MASK
+
+
+def _irq_close(pin):
+    global _irq_pending_mask
+    _irq_pending_mask |= BUTTON_CLOSE_MASK
+
+
+def _irq_vent(pin):
+    global _irq_pending_mask
+    _irq_pending_mask |= BUTTON_VENT_MASK
+
+
+def _irq_light(pin):
+    global _irq_pending_mask
+    _irq_pending_mask |= BUTTON_LIGHT_MASK
+
+
+def _irq_stop(pin):
+    global _irq_pending_mask
+    _irq_pending_mask |= BUTTON_STOP_MASK
+
+
+def _button_ready(name, now):
+    last = _button_last_accept_ms[name]
+    if last and utime.ticks_diff(now, last) < DEBOUNCE_MS:
+        return False
+    _button_last_accept_ms[name] = now
+    return True
+
+
+def service_button_events():
+    """Consume captured edges safely outside hardware interrupt context."""
+    global _irq_pending_mask
+
+    irq_state = machine.disable_irq()
+    mask = _irq_pending_mask
+    _irq_pending_mask = 0
+    machine.enable_irq(irq_state)
+
+    if not mask:
+        return
+
+    now = utime.ticks_ms()
+    if utime.ticks_diff(now, _boot_ms) < BOOT_IGNORE_MS:
+        return
+
+    # STOP wins when several edges accumulated during a sensor operation.
+    if (mask & BUTTON_STOP_MASK) and _button_ready("stop", now):
+        stop_start_trigger()
+        return
+    if (mask & BUTTON_OPEN_MASK) and _button_ready("open", now):
+        enqueue_command("open")
+    if (mask & BUTTON_CLOSE_MASK) and _button_ready("close", now):
+        enqueue_command("close")
+    if (mask & BUTTON_VENT_MASK) and _button_ready("vent", now):
+        enqueue_command("vent")
+    if (mask & BUTTON_LIGHT_MASK) and _button_ready("light", now):
+        light_turn_on_off()
+
+
+# Retain the Pin objects for the life of the program.
+stop_input = Pin(STOP_PIN, Pin.IN, Pin.PULL_UP)
+open_input = Pin(OPEN_PIN, Pin.IN, Pin.PULL_UP)
+close_input = Pin(CLOSE_PIN, Pin.IN, Pin.PULL_UP)
+vent_input = Pin(VENT_PIN, Pin.IN, Pin.PULL_UP)
+light_input = Pin(LIGHT_PIN, Pin.IN, Pin.PULL_UP)
+
+stop_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_stop)
+open_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_open)
+close_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_close)
+vent_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_vent)
+light_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_light)
 
 
 # ----------------------------
@@ -1363,9 +1441,24 @@ def pi_heartbeat_watchdog():
 # ----------------------------
 # Motor and light relay pulses are non-blocking.
 # service_pulses() must run every loop.
+try:
+    # RP2040 supports a maximum timeout of approximately 8.3 seconds.
+    wdt = machine.WDT(timeout=8000)
+    send_event("control_watchdog_enabled")
+except Exception as e:
+    wdt = None
+    dbg("control watchdog unavailable: " + str(e))
+
+try:
+    send_event("pico_reset_cause_" + str(machine.reset_cause()))
+except Exception:
+    pass
+
 while True:
+    feed_watchdog()
     check_uart()
     service_pulses()
+    service_button_events()
     pi_heartbeat_watchdog()
 
     if UPDATE_MODE:
