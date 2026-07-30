@@ -1,5 +1,5 @@
 {
-  "version": "1.0.13-control-watchdog-command-guard",
+  "version": "1.0.14-qualified-inputs-stop-disabled",
   "file": "main.py",
-  "notes": "Prevent duplicate motion commands while preserving safe interrupts and watchdog"
+  "notes": "Qualified inputs and STOP disabled to prevent unintended door operation"
 }
