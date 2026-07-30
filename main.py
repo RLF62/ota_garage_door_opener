@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.13-control-watchdog-command-guard"
+FW_VERSION = "1.0.14-qualified-inputs-stop-disabled"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -698,11 +698,8 @@ def pulse_motor_for_stop():
 
 
 def stop_start_trigger():
-    global stop_command, abort_motion, pending_command
-    send_event("wall_stop")
-    stop_command = True
-    abort_motion = True
-    pending_command = None
+    # Deliberately retained as a harmless compatibility stub.
+    send_event("wall_stop_ignored")
 
 
 def enqueue_command(cmd):
@@ -897,7 +894,9 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
 def handle_command(cmd):
     """
     Handles commands from the Pi Zero/web app.
-    Accepts: open, close, vent, stop, light
+    Accepts: open, close, vent, light.
+    STOP is intentionally ignored because the opener uses the same toggle
+    line for START and STOP. A false STOP while stationary can open the door.
     """
     global stop_command, abort_motion, pending_command
 
@@ -917,10 +916,8 @@ def handle_command(cmd):
         return
 
     if cmd == "stop":
-        send_event("app_stop")
-        stop_command = True
-        abort_motion = True
-        pending_command = None
+        send_event("app_stop_ignored")
+        return
 
     elif cmd in ("open", "close", "vent"):
         send_event("app_" + cmd)
@@ -1278,46 +1275,78 @@ def start_move(action):
 # Interrupt bindings
 # ----------------------------
 # IRQ handlers must not sleep, allocate JSON, write UART, touch dictionaries,
-# or start timers. They only latch an edge; normal code performs the work.
+# or start timers. Each handler records a falling-edge time and accepts the
+# command only on a rising edge after the input remained LOW for at least
+# INPUT_MIN_LOW_MS. Brief electrical spikes are discarded.
 BUTTON_OPEN_MASK = 0x01
 BUTTON_CLOSE_MASK = 0x02
 BUTTON_VENT_MASK = 0x04
 BUTTON_LIGHT_MASK = 0x08
-BUTTON_STOP_MASK = 0x10
+INPUT_MIN_LOW_MS = 40
 
 _irq_pending_mask = 0
+_open_low_since_ms = 0
+_close_low_since_ms = 0
+_vent_low_since_ms = 0
+_light_low_since_ms = 0
 _button_last_accept_ms = {
     "open": 0,
     "close": 0,
     "vent": 0,
     "light": 0,
-    "stop": 0,
 }
 
 
 def _irq_open(pin):
-    global _irq_pending_mask
-    _irq_pending_mask |= BUTTON_OPEN_MASK
+    global _irq_pending_mask, _open_low_since_ms
+    now = utime.ticks_ms()
+    if pin.value() == 0:
+        if _open_low_since_ms == 0:
+            _open_low_since_ms = now
+    else:
+        started = _open_low_since_ms
+        _open_low_since_ms = 0
+        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
+            _irq_pending_mask |= BUTTON_OPEN_MASK
 
 
 def _irq_close(pin):
-    global _irq_pending_mask
-    _irq_pending_mask |= BUTTON_CLOSE_MASK
+    global _irq_pending_mask, _close_low_since_ms
+    now = utime.ticks_ms()
+    if pin.value() == 0:
+        if _close_low_since_ms == 0:
+            _close_low_since_ms = now
+    else:
+        started = _close_low_since_ms
+        _close_low_since_ms = 0
+        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
+            _irq_pending_mask |= BUTTON_CLOSE_MASK
 
 
 def _irq_vent(pin):
-    global _irq_pending_mask
-    _irq_pending_mask |= BUTTON_VENT_MASK
+    global _irq_pending_mask, _vent_low_since_ms
+    now = utime.ticks_ms()
+    if pin.value() == 0:
+        if _vent_low_since_ms == 0:
+            _vent_low_since_ms = now
+    else:
+        started = _vent_low_since_ms
+        _vent_low_since_ms = 0
+        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
+            _irq_pending_mask |= BUTTON_VENT_MASK
 
 
 def _irq_light(pin):
-    global _irq_pending_mask
-    _irq_pending_mask |= BUTTON_LIGHT_MASK
-
-
-def _irq_stop(pin):
-    global _irq_pending_mask
-    _irq_pending_mask |= BUTTON_STOP_MASK
+    global _irq_pending_mask, _light_low_since_ms
+    now = utime.ticks_ms()
+    if pin.value() == 0:
+        if _light_low_since_ms == 0:
+            _light_low_since_ms = now
+    else:
+        started = _light_low_since_ms
+        _light_low_since_ms = 0
+        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
+            _irq_pending_mask |= BUTTON_LIGHT_MASK
 
 
 def _button_ready(name, now):
@@ -1344,10 +1373,6 @@ def service_button_events():
     if utime.ticks_diff(now, _boot_ms) < BOOT_IGNORE_MS:
         return
 
-    # STOP wins when several edges accumulated during a sensor operation.
-    if (mask & BUTTON_STOP_MASK) and _button_ready("stop", now):
-        stop_start_trigger()
-        return
     if (mask & BUTTON_OPEN_MASK) and active_motion_command != "open" and _button_ready("open", now):
         enqueue_command("open")
     if (mask & BUTTON_CLOSE_MASK) and active_motion_command != "close" and _button_ready("close", now):
@@ -1365,11 +1390,12 @@ close_input = Pin(CLOSE_PIN, Pin.IN, Pin.PULL_UP)
 vent_input = Pin(VENT_PIN, Pin.IN, Pin.PULL_UP)
 light_input = Pin(LIGHT_PIN, Pin.IN, Pin.PULL_UP)
 
-stop_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_stop)
-open_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_open)
-close_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_close)
-vent_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_vent)
-light_input.irq(trigger=Pin.IRQ_FALLING, handler=_irq_light)
+# STOP intentionally has no IRQ handler. It cannot trigger an opener pulse.
+qualified_edges = Pin.IRQ_FALLING | Pin.IRQ_RISING
+open_input.irq(trigger=qualified_edges, handler=_irq_open)
+close_input.irq(trigger=qualified_edges, handler=_irq_close)
+vent_input.irq(trigger=qualified_edges, handler=_irq_vent)
+light_input.irq(trigger=qualified_edges, handler=_irq_light)
 
 
 # ----------------------------
@@ -1465,13 +1491,6 @@ while True:
     if UPDATE_MODE:
         time.sleep_ms(20)
         continue
-
-    if stop_command:
-        send_event("motion_stop")
-        pulse_motor_for_stop()
-        wait_pulse_done_with_service()
-        stop_command = False
-        abort_motion = False
 
     if pending_command:
         cmd = pending_command
