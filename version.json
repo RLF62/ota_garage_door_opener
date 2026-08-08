@@ -1,5 +1,5 @@
 {
-  "version": "1.0.15-polled-inputs-stop-disabled",
+  "version": "1.0.16-qualified-inputs-stop-disabled",
   "file": "main.py",
-  "notes": "polled-inputs-stop-disabled"
+  "notes": "rolled back to version 1.0.14"
 }
