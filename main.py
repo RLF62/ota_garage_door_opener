@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.14-qualified-inputs-stop-disabled"
+FW_VERSION = "1.0.15-polled-inputs-stop-disabled"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -1272,81 +1272,21 @@ def start_move(action):
 
 
 # ----------------------------
-# Interrupt bindings
+# Qualified command inputs (polled)
 # ----------------------------
-# IRQ handlers must not sleep, allocate JSON, write UART, touch dictionaries,
-# or start timers. Each handler records a falling-edge time and accepts the
-# command only on a rising edge after the input remained LOW for at least
-# INPUT_MIN_LOW_MS. Brief electrical spikes are discarded.
-BUTTON_OPEN_MASK = 0x01
-BUTTON_CLOSE_MASK = 0x02
-BUTTON_VENT_MASK = 0x04
-BUTTON_LIGHT_MASK = 0x08
+# These inputs are intentionally polled rather than handled by Pin.irq(). Both
+# the local wall buttons and the Pi web-command outputs arrive on these pins.
+# A failed IRQ path therefore disabled every control while the rest of the Pico
+# continued reporting telemetry. Polling keeps the same noise qualification,
+# accepts one command per press, and automatically rearms after release.
 INPUT_MIN_LOW_MS = 40
 
-_irq_pending_mask = 0
-_open_low_since_ms = 0
-_close_low_since_ms = 0
-_vent_low_since_ms = 0
-_light_low_since_ms = 0
 _button_last_accept_ms = {
     "open": 0,
     "close": 0,
     "vent": 0,
     "light": 0,
 }
-
-
-def _irq_open(pin):
-    global _irq_pending_mask, _open_low_since_ms
-    now = utime.ticks_ms()
-    if pin.value() == 0:
-        if _open_low_since_ms == 0:
-            _open_low_since_ms = now
-    else:
-        started = _open_low_since_ms
-        _open_low_since_ms = 0
-        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
-            _irq_pending_mask |= BUTTON_OPEN_MASK
-
-
-def _irq_close(pin):
-    global _irq_pending_mask, _close_low_since_ms
-    now = utime.ticks_ms()
-    if pin.value() == 0:
-        if _close_low_since_ms == 0:
-            _close_low_since_ms = now
-    else:
-        started = _close_low_since_ms
-        _close_low_since_ms = 0
-        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
-            _irq_pending_mask |= BUTTON_CLOSE_MASK
-
-
-def _irq_vent(pin):
-    global _irq_pending_mask, _vent_low_since_ms
-    now = utime.ticks_ms()
-    if pin.value() == 0:
-        if _vent_low_since_ms == 0:
-            _vent_low_since_ms = now
-    else:
-        started = _vent_low_since_ms
-        _vent_low_since_ms = 0
-        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
-            _irq_pending_mask |= BUTTON_VENT_MASK
-
-
-def _irq_light(pin):
-    global _irq_pending_mask, _light_low_since_ms
-    now = utime.ticks_ms()
-    if pin.value() == 0:
-        if _light_low_since_ms == 0:
-            _light_low_since_ms = now
-    else:
-        started = _light_low_since_ms
-        _light_low_since_ms = 0
-        if started and utime.ticks_diff(now, started) >= INPUT_MIN_LOW_MS:
-            _irq_pending_mask |= BUTTON_LIGHT_MASK
 
 
 def _button_ready(name, now):
@@ -1357,32 +1297,6 @@ def _button_ready(name, now):
     return True
 
 
-def service_button_events():
-    """Consume captured edges safely outside hardware interrupt context."""
-    global _irq_pending_mask
-
-    irq_state = machine.disable_irq()
-    mask = _irq_pending_mask
-    _irq_pending_mask = 0
-    machine.enable_irq(irq_state)
-
-    if not mask:
-        return
-
-    now = utime.ticks_ms()
-    if utime.ticks_diff(now, _boot_ms) < BOOT_IGNORE_MS:
-        return
-
-    if (mask & BUTTON_OPEN_MASK) and active_motion_command != "open" and _button_ready("open", now):
-        enqueue_command("open")
-    if (mask & BUTTON_CLOSE_MASK) and active_motion_command != "close" and _button_ready("close", now):
-        enqueue_command("close")
-    if (mask & BUTTON_VENT_MASK) and active_motion_command != "vent" and _button_ready("vent", now):
-        enqueue_command("vent")
-    if (mask & BUTTON_LIGHT_MASK) and _button_ready("light", now):
-        light_turn_on_off()
-
-
 # Retain the Pin objects for the life of the program.
 stop_input = Pin(STOP_PIN, Pin.IN, Pin.PULL_UP)
 open_input = Pin(OPEN_PIN, Pin.IN, Pin.PULL_UP)
@@ -1390,12 +1304,59 @@ close_input = Pin(CLOSE_PIN, Pin.IN, Pin.PULL_UP)
 vent_input = Pin(VENT_PIN, Pin.IN, Pin.PULL_UP)
 light_input = Pin(LIGHT_PIN, Pin.IN, Pin.PULL_UP)
 
-# STOP intentionally has no IRQ handler. It cannot trigger an opener pulse.
-qualified_edges = Pin.IRQ_FALLING | Pin.IRQ_RISING
-open_input.irq(trigger=qualified_edges, handler=_irq_open)
-close_input.irq(trigger=qualified_edges, handler=_irq_close)
-vent_input.irq(trigger=qualified_edges, handler=_irq_vent)
-light_input.irq(trigger=qualified_edges, handler=_irq_light)
+# None means released. Once accepted, a held input stays latched until release.
+_button_low_since_ms = {
+    "open": None,
+    "close": None,
+    "vent": None,
+    "light": None,
+}
+_button_accepted = {
+    "open": False,
+    "close": False,
+    "vent": False,
+    "light": False,
+}
+_button_inputs = (
+    ("open", open_input),
+    ("close", close_input),
+    ("vent", vent_input),
+    ("light", light_input),
+)
+
+
+def service_button_events():
+    """Poll and qualify local/web command inputs without relying on IRQs."""
+    now = utime.ticks_ms()
+
+    for name, pin in _button_inputs:
+        if pin.value() != 0:
+            _button_low_since_ms[name] = None
+            _button_accepted[name] = False
+            continue
+
+        started = _button_low_since_ms[name]
+        if started is None:
+            _button_low_since_ms[name] = now
+            continue
+
+        if _button_accepted[name]:
+            continue
+
+        if utime.ticks_diff(now, started) < INPUT_MIN_LOW_MS:
+            continue
+
+        _button_accepted[name] = True
+
+        if utime.ticks_diff(now, _boot_ms) < BOOT_IGNORE_MS:
+            continue
+        if not _button_ready(name, now):
+            continue
+
+        if name == "light":
+            light_turn_on_off()
+        elif active_motion_command != name:
+            enqueue_command(name)
 
 
 # ----------------------------
