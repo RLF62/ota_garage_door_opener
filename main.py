@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.17-qualified-inputs-stop-disabled"
+FW_VERSION = "1.0.18-fix-wrong-direction-detection"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -1149,7 +1149,7 @@ def start_move(action):
         safe_motor()
 
         # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(250)
+        wait_ms_with_service(500)
         check_uart()
         if abort_motion:
             return
@@ -1177,7 +1177,7 @@ def start_move(action):
         safe_motor()
 
         # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(250)
+        wait_ms_with_service(500)
         check_uart()
         if abort_motion:
             return
