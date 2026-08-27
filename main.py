@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.14-qualified-inputs-stop-disabled"
+FW_VERSION = "1.0.16-confirmed-direction-check"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -606,6 +606,16 @@ _lidar_jump_candidate_count = 0
 
 LOOP_SLEEP_S = 0.05
 
+# Direction verification for OPEN/CLOSE toggle commands. The opener may start
+# in the opposite direction when it was previously stopped at VENT. Ignore the
+# reflector's initial movement and require multiple agreeing, meaningful
+# changes before authorizing stop/reverse pulses.
+DIRECTION_INITIAL_SETTLE_MS = 1500
+DIRECTION_CHECK_INTERVAL_MS = 350
+DIRECTION_VERIFY_TIMEOUT_MS = 4500
+DIRECTION_MIN_CHANGE_IN = 2.0
+DIRECTION_CONFIRMATIONS = 2
+
 # Environmental period: 60 seconds
 ENV_PERIOD_S = 60.0
 _last_env_ts_ms = 0
@@ -1125,13 +1135,85 @@ def check_uart():
 # ----------------------------
 # Movement control (robust comparisons)
 # ----------------------------
+def confirm_started_direction(start_in, requested_action):
+    """
+    Return 'correct', 'wrong', or 'unknown' after a motor start pulse.
+
+    Direction is based on several median-filtered readings taken after the
+    target plate has had time to settle. Increasing distance means closing;
+    decreasing distance means opening. Two consecutive checks must agree.
+    """
+    wait_ms_with_service(DIRECTION_INITIAL_SETTLE_MS)
+    if abort_motion:
+        return 'unknown'
+
+    deadline = utime.ticks_add(utime.ticks_ms(), DIRECTION_VERIFY_TIMEOUT_MS)
+    correct_count = 0
+    wrong_count = 0
+
+    while utime.ticks_diff(deadline, utime.ticks_ms()) > 0 and not abort_motion:
+        check_uart()
+        service_button_events()
+
+        measured_in = get_position(sample_count=5, delay=0.003, settle_ms=8)
+        if measured_in is not None:
+            change_in = measured_in - start_in
+
+            if abs(change_in) >= DIRECTION_MIN_CHANGE_IN:
+                moving_close = change_in > 0
+                direction_correct = (
+                    (requested_action == 'close' and moving_close) or
+                    (requested_action == 'open' and not moving_close)
+                )
+
+                if direction_correct:
+                    correct_count += 1
+                    wrong_count = 0
+                    if correct_count >= DIRECTION_CONFIRMATIONS:
+                        return 'correct'
+                else:
+                    wrong_count += 1
+                    correct_count = 0
+                    if wrong_count >= DIRECTION_CONFIRMATIONS:
+                        return 'wrong'
+
+        wait_ms_with_service(DIRECTION_CHECK_INTERVAL_MS)
+
+    return 'unknown'
+
+
+def start_absolute_open_close(action, current_in):
+    """Start OPEN/CLOSE and correct a confirmed opposite toggle direction."""
+    if not safe_motor():
+        return
+
+    direction = confirm_started_direction(current_in, action)
+    send_event("motion_direction_" + action + "_" + direction)
+
+    if abort_motion:
+        return
+
+    if direction == 'wrong':
+        # First pulse stops the confirmed wrong movement; second starts the
+        # requested direction.
+        safe_motor()
+        wait_ms_with_service(350)
+        if not abort_motion:
+            safe_motor()
+    elif direction == 'unknown':
+        # Do not leave a potentially wrong-moving door running. One pulse stops
+        # the movement; no automatic reversal is attempted without confidence.
+        safe_motor()
+        send_event("motion_direction_unknown_stopped")
+
+
 def start_move(action):
     global vent_status, abort_motion
     send_event("motion_" + action)
     abort_motion = False
     deadband = 1.0
 
-    current_in = get_position(sample_count=2, delay=0.001, settle_ms=8)
+    current_in = get_position(sample_count=5, delay=0.003, settle_ms=8)
     if current_in is None:
         return
 
@@ -1146,26 +1228,7 @@ def start_move(action):
         if mapped <= 0:
             return
 
-        safe_motor()
-
-        # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(250)
-        check_uart()
-        if abort_motion:
-            return
-
-        p = read_in()
-        if p is None:
-            return
-
-        # If distance went the wrong way, pulse again to reverse/stop/restart depending opener state.
-        if p >= current_in:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
-                return
-            safe_motor()
+        start_absolute_open_close(action, current_in)
 
     elif action == 'close':
         vent_status = 0
@@ -1174,26 +1237,7 @@ def start_move(action):
         if mapped >= 100:
             return
 
-        safe_motor()
-
-        # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(250)
-        check_uart()
-        if abort_motion:
-            return
-
-        p = read_in()
-        if p is None:
-            return
-
-        # If distance went the wrong way, pulse again to reverse/stop/restart depending opener state.
-        if p <= current_in:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
-                return
-            safe_motor()
+        start_absolute_open_close(action, current_in)
 
     elif action == 'vent':
         # Do not latch VENTED before the door reaches the target. The position
