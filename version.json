@@ -1,5 +1,5 @@
 {
-  "version": "1.0.17-qualified-inputs-stop-disabled",
+  "version": "1.0.18-fix-wrong-direction-detection",
   "file": "main.py",
-  "notes": "revert back to 1.0.14-qualified-inputs-stop-disabled"
+  "notes": "fix-wrong-direction-detection"
 }
