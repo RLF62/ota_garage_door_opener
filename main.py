@@ -22,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.0-fix-wrong-direction-detection"
+FW_VERSION = "1.0.20-fix-wrong-direction-detection"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
