@@ -1,5 +1,5 @@
 {
-  "version": "1.0.19-fix-CRITICAL-STARTUP",
+  "version": "1.0.20-fix-wrong-direction-detection",
   "file": "main.py",
-  "notes": "fix-CRITICAL-STARTUP"
+  "notes": "fix-wrong-direction-detection"
 }
