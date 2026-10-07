@@ -1,13 +1,4 @@
-# ------------------------------------------------------------
-# CRITICAL STARTUP: POWER THE PI ZERO BEFORE ANY OTHER IMPORTS
-# ------------------------------------------------------------
-# GP2 HIGH = Pi Zero power ON with the v9 AO3407A + 2N2222 circuit.
-# Do this first so an import/startup failure cannot leave the Pi unpowered.
-from machine import Pin
-PI_PWR_PIN = 2
-pi_pwr = Pin(PI_PWR_PIN, Pin.OUT, value=1)
-
-from machine import UART, I2C, ADC
+from machine import Pin, UART, I2C, ADC
 import machine
 import time
 import utime
@@ -31,7 +22,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.19-fix-CRITICAL-STARTUP"
+FW_VERSION = "1.0.0-fix-wrong-direction-detection"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -338,9 +329,9 @@ hb_miss_count = 0
 # ----------------------------
 # PI POWER CONTROL (AO3407A + 2N2222)
 # ----------------------------
-# PI_PWR_PIN and pi_pwr are intentionally initialized at the very top of
-# main.py so the Pi Zero receives power before any other module can fail.
-# Do NOT reinitialize GP2 here.
+PI_PWR_PIN = 2
+pi_pwr = Pin(PI_PWR_PIN, Pin.OUT)
+pi_pwr.value(1)  # Pi ON by default
 
 PI_BOOT_GRACE_MS = 180000       # ignore watchdog checks for 3 minutes after power on
 PI_RESET_COOLDOWN_MS = 300000   # don't reset again within 5 minutes
