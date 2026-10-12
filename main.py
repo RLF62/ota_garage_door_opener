@@ -31,7 +31,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.24-SETTINGS-CONFIRMED"
+FW_VERSION = "1.0.25-VENT-SETTLE"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -586,7 +586,14 @@ DOOR_VENT_IN = 75
 # Clear a remembered vent state once the measured door position moves away
 # from the configured vent location. This also handles movement from a vehicle
 # remote, where the Pico never receives an OPEN or CLOSE command.
-VENT_STATUS_ENTER_DEADBAND_IN = 2.0
+VENT_STATUS_ENTER_DEADBAND_IN = 3.0
+# Initial compensation from Truck captures; validate against physical stops.
+VENT_STOP_LEAD_CLOSING_IN = 4.0
+VENT_STOP_LEAD_OPENING_IN = 3.0
+VENT_SETTLE_MS = 700
+VENT_SETTLE_RANGE_IN = 1.5
+_vent_recent_samples = []
+_position_fresh = False
 VENT_STATUS_EXIT_DEADBAND_IN = 4.0
 
 LIGHT_LEVEL_ON = 30000
@@ -963,8 +970,62 @@ def send_environmental_data():
 # ----------------------------
 # Position read (returns last good instead of None)
 # ----------------------------
+def update_settled_vent_status(distance_in):
+    global _vent_recent_samples, vent_status
+    now = utime.ticks_ms()
+    _vent_recent_samples.append((now, distance_in))
+    _vent_recent_samples = [(t, v) for t, v in _vent_recent_samples
+                            if utime.ticks_diff(now, t) <= 1500][-16:]
+    values = [v for _, v in _vent_recent_samples]
+    span = utime.ticks_diff(now, _vent_recent_samples[0][0])
+    settled = (len(values) >= 4 and span >= VENT_SETTLE_MS
+               and max(values) - min(values) <= VENT_SETTLE_RANGE_IN)
+    error = abs(distance_in - DOOR_VENT_IN)
+    moving = (len(values) >= 4 and span >= 300 and
+              abs(values[-1] - values[0]) >= 2.0)
+    if vent_status == 0 and settled and error <= VENT_STATUS_ENTER_DEADBAND_IN:
+        vent_status = 1
+        send_vent_status(1)
+    elif vent_status == 1 and (moving or error > VENT_STATUS_EXIT_DEADBAND_IN):
+        vent_status = 0
+        send_vent_status(0)
+    return settled
+
+
+def confirm_vent_stop():
+    # Do not declare success just because a STOP pulse was sent. Collect fresh
+    # readings after it and let settled-position logic drive the status.
+    global _vent_recent_samples, vent_status
+    _vent_recent_samples = []
+    started = utime.ticks_ms()
+    while utime.ticks_diff(utime.ticks_ms(), started) < 3500 and not abort_motion:
+        feed_watchdog()
+        service_pulses()
+        check_uart()
+        service_button_events()
+        if abort_motion or UPDATE_MODE:
+            return False
+        p = get_position(sample_count=1, delay=0.001, settle_ms=5)
+        if _position_fresh and p is not None:
+            values = [v for _, v in _vent_recent_samples]
+            if (len(values) >= 4 and
+                    utime.ticks_diff(_vent_recent_samples[-1][0], _vent_recent_samples[0][0]) >= VENT_SETTLE_MS and
+                    max(values) - min(values) <= VENT_SETTLE_RANGE_IN):
+                good = abs(p - DOOR_VENT_IN) <= VENT_STATUS_ENTER_DEADBAND_IN
+                diag_record("vent_settled_in", p)
+                if not good:
+                    vent_status = 0
+                    send_vent_status(0)
+                    send_event("vent_stopped_outside_tolerance")
+                return good
+        wait_ms_with_service(80)
+    send_event("vent_settle_unconfirmed")
+    return False
+
+
 def get_position(sample_count=3, delay=0.001, settle_ms=8):
-    global mapped, _last_good_distance_in, vent_status
+    global mapped, _last_good_distance_in, vent_status, _position_fresh
+    _position_fresh = False
     global _last_lidar_good_ms, _last_lidar_value_in
     global _lidar_jump_candidate_in, _lidar_jump_candidate_count
 
@@ -1033,6 +1094,7 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
         mapped = float(m)
         _last_good_distance_in = float(accepted_in)
 
+        _position_fresh = True
         _last_lidar_good_ms = utime.ticks_ms()
         _last_lidar_value_in = float(accepted_in)
 
@@ -1043,14 +1105,7 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
         # whether the door was moved by the app, wall control, or vehicle remote.
         # A tighter enter window and wider exit window provide hysteresis so
         # normal 1-inch LIDAR variation does not make the status flicker.
-        vent_error = abs(accepted_in - DOOR_VENT_IN)
-
-        if vent_status == 0 and vent_error <= VENT_STATUS_ENTER_DEADBAND_IN:
-            vent_status = 1
-            send_vent_status(vent_status)
-        elif vent_status == 1 and vent_error > VENT_STATUS_EXIT_DEADBAND_IN:
-            vent_status = 0
-            send_vent_status(vent_status)
+        update_settled_vent_status(accepted_in)
 
         return accepted_in
 
@@ -1447,9 +1502,8 @@ def start_move(action):
         # HTML status to remain a percentage such as 82% instead of VENTED.
         vent_status = 0
 
-        if abs(current_in - DOOR_VENT_IN) <= deadband:
-            vent_status = 1
-            send_vent_status(vent_status)
+        if abs(current_in - DOOR_VENT_IN) <= VENT_STATUS_ENTER_DEADBAND_IN:
+            confirm_vent_stop()
             return
 
         start_time = time.time()
@@ -1476,15 +1530,18 @@ def start_move(action):
                     time.sleep(0.02)
                     continue
 
-                if p >= (DOOR_VENT_IN - deadband):
+                if _position_fresh and p >= (DOOR_VENT_IN - VENT_STOP_LEAD_CLOSING_IN):
+                    diag_record("vent_stop_threshold_in", p)
                     break
 
                 time.sleep(0.02)
 
             if not abort_motion:
-                safe_motor()
-                vent_status = 1
-                send_vent_status(vent_status)
+                if _position_fresh and p >= (DOOR_VENT_IN - VENT_STOP_LEAD_CLOSING_IN):
+                    safe_motor()
+                    confirm_vent_stop()
+                else:
+                    send_event("vent_target_unconfirmed")
 
         elif p > DOOR_VENT_IN:
             safe_motor()
@@ -1505,15 +1562,18 @@ def start_move(action):
                     time.sleep(0.02)
                     continue
 
-                if p <= (DOOR_VENT_IN + deadband):
+                if _position_fresh and p <= (DOOR_VENT_IN + VENT_STOP_LEAD_OPENING_IN):
+                    diag_record("vent_stop_threshold_in", p)
                     break
 
                 time.sleep(0.02)
 
             if not abort_motion:
-                safe_motor()
-                vent_status = 1
-                send_vent_status(vent_status)
+                if _position_fresh and p <= (DOOR_VENT_IN + VENT_STOP_LEAD_OPENING_IN):
+                    safe_motor()
+                    confirm_vent_stop()
+                else:
+                    send_event("vent_target_unconfirmed")
 
 
 # ----------------------------
