@@ -31,7 +31,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.21-CRITICAL-STARTUP"
+FW_VERSION = "1.0.22-VERIFIED-DIRECTION"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -623,6 +623,138 @@ _last_env_ts_ms = 0
 # ----------------------------
 # Debounce / actions
 # ----------------------------
+# Experimental verified-direction firmware. Back up the current main.py.
+# Install as main.py on the Pico; leave Pi capture logging enabled for testing.
+# The 3-inch vent leads and direction thresholds require physical validation.
+# Faults stop automated pulses; they do not guarantee the physical door stops.
+# Phase 1 diagnostic transport retained. Install this file as main.py after backing up
+# the installed main.py. Hardware and pin assignments match
+# 1.0.21-CRITICAL-STARTUP pin assignments and protocol are retained.
+# Capture USB console output with Thonny; records start with GARAGE_DIAG.
+# UART receives the same record in the existing {"dbg": "..."} envelope.
+# Pi logging of dbg messages must be verified before relying on unattended logs.
+# Do not open a second reader on the Pi UART while its existing reader is running.
+# Test OPEN -> VENT -> CLOSE and OPEN -> VENT -> OPEN with someone present.
+# Include wall/remote movements and a reset while stationary at VENT.
+# Manual movement has sample records but no pulse records (not wired to Pico).
+# Sampling uses existing calls, so the initial 500 ms wait can have no samples.
+# All timing is monotonic Pico ms, wrapping at the MicroPython ticks period.
+# Diagnostics are buffered and emitted only when the motor relay is inactive.
+# Samples near commands/pulses use 100 ms, long moves use 500 ms,
+# and idle sampling uses 5 seconds; this only throttles diagnostic recording.
+# Queue overflow drops new records and emits a dropped count; it never blocks.
+# These diagnostics add execution overhead and still require physical testing.
+DIAG_ENABLED = True
+_DIAG_CAPACITY = 256
+_diag_queue = [None] * _DIAG_CAPACITY
+_diag_head = 0
+_diag_count = 0
+_diag_dropped = 0
+_diag_sequence = 0
+_diag_session = 0
+_diag_action = None
+_diag_until_ms = None
+_diag_last_raw_ms = None
+_diag_last_result_ms = None
+
+
+def diag_record(kind, value=None):
+    global _diag_count, _diag_dropped, _diag_sequence
+    if not DIAG_ENABLED:
+        return
+    try:
+        _diag_sequence += 1
+        if (kind in ("raw_cm", "accepted_in", "jump_cached_in",
+                     "read_failed_cached_in", "read_failed_no_cache") and
+                _diag_count >= _DIAG_CAPACITY - 16):
+            _diag_dropped += 1
+            return
+        if _diag_count >= _DIAG_CAPACITY:
+            _diag_dropped += 1
+            return
+        index = (_diag_head + _diag_count) % _DIAG_CAPACITY
+        _diag_queue[index] = (utime.ticks_ms(), _diag_sequence,
+                              _diag_session, _diag_action, kind, value)
+        _diag_count += 1
+    except Exception:
+        pass
+
+
+def diag_begin(action):
+    global _diag_session, _diag_action, _diag_until_ms
+    if not DIAG_ENABLED:
+        return
+    _diag_session += 1
+    _diag_action = action
+    _diag_until_ms = utime.ticks_add(utime.ticks_ms(), 3000)
+    diag_record("command_begin", (DOOR_OPEN_IN, DOOR_VENT_IN, DOOR_CLOSED_IN))
+
+
+def diag_end():
+    global _diag_action, _diag_until_ms
+    diag_record("command_return", bool(abort_motion))
+    _diag_action = None
+    _diag_until_ms = utime.ticks_add(utime.ticks_ms(), 3000)
+
+
+def diag_pulse(kind, force=False):
+    global _diag_until_ms
+    _diag_until_ms = utime.ticks_add(utime.ticks_ms(), 3000)
+    diag_record(kind, bool(force))
+
+
+def diag_raw(distance_cm):
+    global _diag_last_raw_ms
+    if not DIAG_ENABLED:
+        return
+    now = utime.ticks_ms()
+    burst = (_diag_until_ms is not None and
+             utime.ticks_diff(_diag_until_ms, now) >= 0)
+    interval = (500 if _diag_action is not None else 5000) if not burst else 100
+    if (_diag_last_raw_ms is None or
+            utime.ticks_diff(now, _diag_last_raw_ms) >= interval):
+        _diag_last_raw_ms = now
+        diag_record("raw_cm", distance_cm)
+
+
+def diag_result(kind, value=None):
+    global _diag_last_result_ms
+    if not DIAG_ENABLED:
+        return
+    now = utime.ticks_ms()
+    burst = (_diag_until_ms is not None and
+             utime.ticks_diff(_diag_until_ms, now) >= 0)
+    interval = (500 if _diag_action is not None else 5000) if not burst else 100
+    if (_diag_last_result_ms is None or
+            utime.ticks_diff(now, _diag_last_result_ms) >= interval):
+        _diag_last_result_ms = now
+        diag_record(kind, value)
+
+
+def diag_flush():
+    global _diag_head, _diag_count, _diag_dropped
+    # No print/UART diagnostic output while a relay is held or while start_move
+    # is executing. One record per idle loop bounds output overhead.
+    if not DIAG_ENABLED or _motor_pulse_active or _light_pulse_active or UPDATE_MODE:
+        return
+    try:
+        for _ in range(min(1, _diag_count)):
+            record = _diag_queue[_diag_head]
+            msg = "GARAGE_DIAG " + ujson.dumps(record)
+            uart.write(ujson.dumps({"dbg": msg}) + "\n")
+            _diag_queue[_diag_head] = None
+            _diag_head = (_diag_head + 1) % _DIAG_CAPACITY
+            _diag_count -= 1
+        if _diag_dropped and _diag_count == 0:
+            msg = "GARAGE_DIAG " + ujson.dumps({"dropped": _diag_dropped,
+                                                "ms": utime.ticks_ms()})
+            uart.write(ujson.dumps({"dbg": msg}) + "\n")
+            _diag_dropped = 0
+    except Exception:
+        # Transport failures must not propagate into door control.
+        pass
+
+
 def service_pulses():
     """
     Turns relay outputs off when their non-blocking hold time has expired.
@@ -635,6 +767,7 @@ def service_pulses():
     if _motor_pulse_active and utime.ticks_diff(now, _motor_pulse_until_ms) >= 0:
         MOTOR_MOVE.value(0)
         _motor_pulse_active = False
+        diag_pulse("pulse_end")
 
     if _light_pulse_active and utime.ticks_diff(now, _light_pulse_until_ms) >= 0:
         LIGHT_ON_OFF.value(0)
@@ -654,6 +787,7 @@ def motor_pulse(force=False):
     MOTOR_MOVE.value(1)
     _motor_pulse_active = True
     _motor_pulse_until_ms = utime.ticks_add(utime.ticks_ms(), button_hold_ms)
+    diag_pulse("pulse_start", force)
     return True
 
 
@@ -804,13 +938,15 @@ def send_environmental_data():
 # Position read (returns last good instead of None)
 # ----------------------------
 def get_position(sample_count=3, delay=0.001, settle_ms=8):
-    global mapped, _last_good_distance_in, vent_status
+    global mapped, _last_good_distance_in, vent_status, _position_fresh
+    _position_fresh = False
     global _last_lidar_good_ms, _last_lidar_value_in
     global _lidar_jump_candidate_in, _lidar_jump_candidate_count
 
     valid_readings = []
     for _ in range(sample_count):
         distance_cm = lidar.read_cm(retries=5, settle_ms=settle_ms, busy_timeout_ms=200)
+        diag_raw(distance_cm)
         if distance_cm is None:
             time.sleep(delay)
             continue
@@ -853,6 +989,7 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
                     _lidar_jump_candidate_count = 1
 
                 if _lidar_jump_candidate_count < LIDAR_JUMP_CONFIRM_COUNT:
+                    diag_result("jump_cached_in", (measured_in, _last_good_distance_in))
                     return _last_good_distance_in
 
                 accepted_in = _lidar_jump_candidate_in
@@ -871,29 +1008,26 @@ def get_position(sample_count=3, delay=0.001, settle_ms=8):
         mapped = float(m)
         _last_good_distance_in = float(accepted_in)
 
+        _position_fresh = True
         _last_lidar_good_ms = utime.ticks_ms()
         _last_lidar_value_in = float(accepted_in)
 
+        diag_result("accepted_in", accepted_in)
         send_position(mapped, accepted_in)
 
         # Determine VENTED from the confirmed LIDAR distance, regardless of
         # whether the door was moved by the app, wall control, or vehicle remote.
         # A tighter enter window and wider exit window provide hysteresis so
         # normal 1-inch LIDAR variation does not make the status flicker.
-        vent_error = abs(accepted_in - DOOR_VENT_IN)
-
-        if vent_status == 0 and vent_error <= VENT_STATUS_ENTER_DEADBAND_IN:
-            vent_status = 1
-            send_vent_status(vent_status)
-        elif vent_status == 1 and vent_error > VENT_STATUS_EXIT_DEADBAND_IN:
-            vent_status = 0
-            send_vent_status(vent_status)
+        _vent_status_observe(accepted_in)
 
         return accepted_in
 
     if _last_good_distance_in is not None:
+        diag_result("read_failed_cached_in", _last_good_distance_in)
         return _last_good_distance_in
 
+    diag_result("read_failed_no_cache")
     return None
 
 
@@ -929,6 +1063,8 @@ def handle_command(cmd):
         return
 
     elif cmd in ("open", "close", "vent"):
+        if cmd == active_motion_command:
+            return
         send_event("app_" + cmd)
         abort_motion = False
         pending_command = cmd
@@ -1134,150 +1270,250 @@ def check_uart():
 # ----------------------------
 # Movement control (robust comparisons)
 # ----------------------------
+# Verified motion controls. Distances remain supplied by the Pi setup page.
+# Initial tuning from Truck captures; validate vent lead with supervised tests.
+VERIFY_MAX_MS = 1800
+STOP_VERIFY_MAX_MS = 3000
+MOTION_SAMPLE_MS = 80
+DIRECTION_MIN_CHANGE_IN = 2.0
+STATIONARY_RANGE_IN = 1.5
+STATIONARY_SPAN_MS = 650
+LIMIT_TOLERANCE_IN = 2.0
+VENT_STOP_LEAD_CLOSE_IN = 3.0
+VENT_STOP_LEAD_OPEN_IN = 3.0
+VENT_SETTLED_TOLERANCE_IN = 3.0
+_position_fresh = False
+_vent_samples = []
+
+
+def _motion_service():
+    global abort_motion
+    feed_watchdog()
+    service_pulses()
+    check_uart()
+    service_button_events()
+    if UPDATE_MODE or (pending_command is not None and pending_command != active_motion_command):
+        abort_motion = True
+    return not abort_motion
+
+
+def _motion_read():
+    if not _motion_service():
+        return None
+    value = get_position(sample_count=1, delay=0.001, settle_ms=5)
+    service_pulses()
+    return value if _position_fresh else None
+
+
+def _motion_wait(ms):
+    end = utime.ticks_add(utime.ticks_ms(), ms)
+    while utime.ticks_diff(end, utime.ticks_ms()) > 0:
+        if not _motion_service():
+            return False
+        utime.sleep_ms(10)
+    return True
+
+
+def _trend(samples):
+    if len(samples) < 4:
+        return "unknown"
+    span = utime.ticks_diff(samples[-1][0], samples[0][0])
+    if span < 300:
+        return "unknown"
+    values = [p for _, p in samples]
+    first = sorted(values[:2])
+    last = sorted(values[-2:])
+    delta = (last[0] + last[1] - first[0] - first[1]) / 2.0
+    # Require two successive changes with the same sign, allowing small jitter.
+    steps = [values[i] - values[i-1] for i in range(1, len(values))]
+    if delta >= DIRECTION_MIN_CHANGE_IN and sum(1 for x in steps if x > 0.2) >= 2:
+        return "close"
+    if delta <= -DIRECTION_MIN_CHANGE_IN and sum(1 for x in steps if x < -0.2) >= 2:
+        return "open"
+    if span >= STATIONARY_SPAN_MS and max(values) - min(values) <= STATIONARY_RANGE_IN:
+        return "stationary"
+    return "unknown"
+
+
+def _limit(position):
+    if abs(position - DOOR_OPEN_IN) <= LIMIT_TOLERANCE_IN:
+        return "open"
+    if abs(position - DOOR_CLOSED_IN) <= LIMIT_TOLERANCE_IN:
+        return "close"
+    return None
+
+
+def _observe(max_ms, require_stationary=False):
+    started = utime.ticks_ms()
+    samples = []
+    while utime.ticks_diff(utime.ticks_ms(), started) < max_ms:
+        if not _motion_service():
+            return "aborted", None
+        p = _motion_read()
+        if p is not None:
+            samples.append((utime.ticks_ms(), p))
+            if len(samples) > 10:
+                samples.pop(0)
+            state = _trend(samples)
+            if state == "stationary" or (not require_stationary and state in ("open", "close")):
+                diag_record("observed_motion", (state, p))
+                return state, p
+        if not _motion_wait(MOTION_SAMPLE_MS):
+            return "aborted", None
+    diag_record("motion_unverified", samples[-1][1] if samples else None)
+    return "unknown", samples[-1][1] if samples else None
+
+
+def _button_and_release(reason):
+    diag_record("button_reason", reason)
+    if not motor_pulse():
+        return False
+    # Service relays before any potentially slow LIDAR transaction.
+    while _motor_pulse_active:
+        if not _motion_service():
+            return False
+        utime.sleep_ms(10)
+    return True
+
+
+def _motion_fault(reason):
+    diag_record("motion_fault", reason)
+    send_event("motion_fault_" + reason)
+    # Unknown state never causes speculative toggle pulses.
+
+
+def _stop_confirmed_motion(reason):
+    # Re-observe just before STOP. A stopped opener must never receive STOP.
+    state, p = _observe(VERIFY_MAX_MS)
+    if state == "stationary":
+        return True, p
+    if state not in ("open", "close"):
+        return False, p
+    if p is not None and _limit(p) is not None:
+        # A trend window can still say MOVING after the physical limit stops
+        # the door. Require fresh stationary evidence before another toggle.
+        state, p = _observe(STOP_VERIFY_MAX_MS, require_stationary=True)
+        return state == "stationary", p
+    if not _button_and_release(reason):
+        return False, p
+    state, p = _observe(STOP_VERIFY_MAX_MS, require_stationary=True)
+    return state == "stationary", p
+
+
+def _vent_status_observe(p):
+    global _vent_samples, vent_status
+    now = utime.ticks_ms()
+    _vent_samples.append((now, p))
+    _vent_samples = [(t, v) for t, v in _vent_samples if utime.ticks_diff(now, t) <= 1500][-10:]
+    settled = _trend(_vent_samples) == "stationary"
+    error = abs(p - DOOR_VENT_IN)
+    enter = settled and error <= VENT_SETTLED_TOLERANCE_IN
+    leave = (error > VENT_STATUS_EXIT_DEADBAND_IN or _trend(_vent_samples) in ("open", "close"))
+    if vent_status == 0 and enter:
+        vent_status = 1
+        send_vent_status(vent_status)
+    elif vent_status == 1 and leave:
+        vent_status = 0
+        send_vent_status(vent_status)
+
+
 def start_move(action):
     global vent_status, abort_motion
-    send_event("motion_" + action)
     abort_motion = False
-    deadband = 1.0
-
-    current_in = get_position(sample_count=2, delay=0.001, settle_ms=8)
-    if current_in is None:
+    send_event("motion_" + action)
+    state, p = _observe(VERIFY_MAX_MS)
+    if p is None or state in ("unknown", "aborted"):
+        _motion_fault("initial_state_unknown")
         return
-
-    def read_in():
-        # Fast single sample for motion tracking.
-        return get_position(sample_count=1, delay=0.001, settle_ms=5)
-
-    if action == 'open':
-        vent_status = 0
-        send_vent_status(vent_status)
-
-        if mapped <= 0:
+    target = DOOR_OPEN_IN if action == "open" else DOOR_CLOSED_IN if action == "close" else DOOR_VENT_IN
+    if action == "vent" and state == "stationary" and abs(p-target) <= VENT_SETTLED_TOLERANCE_IN:
+        _vent_status_observe(p)
+        return
+    if action in ("open", "close") and state == "stationary" and _limit(p) == action:
+        diag_record("target_already_reached", p)
+        return
+    desired = action if action != "vent" else ("close" if p < target else "open")
+    vent_status = 0
+    send_vent_status(0)
+    corrected = False
+    if state == "stationary":
+        if not _button_and_release("initial_start"):
             return
-
-        safe_motor()
-
-        # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(500)
-        check_uart()
-        if abort_motion:
+        state, p = _observe(VERIFY_MAX_MS)
+    # Correction is permitted only during initial acquisition, never after a
+    # confirmed correct run reverses (e.g. the opener's obstruction response).
+    if state in ("open", "close") and state != desired:
+        stopped, p = _stop_confirmed_motion("wrong_direction_stop")
+        if not stopped:
+            _motion_fault("stop_unconfirmed")
             return
-
-        p = read_in()
-        if p is None:
+        corrected = True
+        if not _button_and_release("restart_opposite"):
             return
-
-        # If distance went the wrong way, pulse again to reverse/stop/restart depending opener state.
-        if p >= current_in:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
+        state, p = _observe(VERIFY_MAX_MS)
+    elif state == "stationary" and _limit(p) is not None and _limit(p) != desired:
+        # Wrong initial travel already ended at the opposite limit: one START,
+        # no unnecessary STOP pulse at an automatically stopped travel limit.
+        corrected = True
+        if not _button_and_release("leave_opposite_limit"):
+            return
+        state, p = _observe(VERIFY_MAX_MS)
+    if state == "stationary" and action in ("open", "close") and _limit(p) == action:
+        diag_record("target_reached", p)
+        return
+    if state != desired:
+        _motion_fault("direction_unconfirmed")
+        return
+    diag_record("direction_confirmed", (desired, corrected, p))
+    started = utime.ticks_ms()
+    history = []
+    last_fresh = started
+    while utime.ticks_diff(utime.ticks_ms(), started) < MAX_TIMEOUT * 1000:
+        if not _motion_service():
+            return
+        q = _motion_read()
+        if q is not None:
+            p = q
+            last_fresh = utime.ticks_ms()
+            history.append((last_fresh, p))
+            if len(history) > 10:
+                history.pop(0)
+            actual = _trend(history)
+            if actual in ("open", "close") and actual != desired:
+                _motion_fault("unexpected_reversal")
                 return
-            safe_motor()
-
-    elif action == 'close':
-        vent_status = 0
-        send_vent_status(vent_status)
-
-        if mapped >= 100:
-            return
-
-        safe_motor()
-
-        # Short delay so HTML simulation starts sooner.
-        wait_ms_with_service(500)
-        check_uart()
-        if abort_motion:
-            return
-
-        p = read_in()
-        if p is None:
-            return
-
-        # If distance went the wrong way, pulse again to reverse/stop/restart depending opener state.
-        if p <= current_in:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
+            if action == "vent":
+                lead = VENT_STOP_LEAD_CLOSE_IN if desired == "close" else VENT_STOP_LEAD_OPEN_IN
+                trigger = p >= target - lead if desired == "close" else p <= target + lead
+                if trigger:
+                    # Recent trend must still prove movement before toggling.
+                    if actual == desired:
+                        if not _button_and_release("vent_target_stop"):
+                            return
+                        state, settled = _observe(STOP_VERIFY_MAX_MS, require_stationary=True)
+                        if state == "stationary":
+                            diag_record("vent_settled_in", settled)
+                            _vent_status_observe(settled)
+                            if abs(settled - target) > VENT_SETTLED_TOLERANCE_IN:
+                                _motion_fault("vent_outside_tolerance")
+                        else:
+                            _motion_fault("vent_stop_unconfirmed")
+                        return
+                    if actual == "stationary":
+                        _motion_fault("vent_stopped_early")
+                        return
+            if actual == "stationary":
+                if action in ("open", "close") and _limit(p) == action:
+                    diag_record("target_reached", p)
+                else:
+                    _motion_fault("stopped_before_target")
                 return
-            safe_motor()
-
-    elif action == 'vent':
-        # Do not latch VENTED before the door reaches the target. The position
-        # reader correctly clears stale vent state while the door is away from
-        # the configured vent distance, so setting this early caused the final
-        # HTML status to remain a percentage such as 82% instead of VENTED.
-        vent_status = 0
-
-        if abs(current_in - DOOR_VENT_IN) <= deadband:
-            vent_status = 1
-            send_vent_status(vent_status)
+        if utime.ticks_diff(utime.ticks_ms(), last_fresh) > 2500:
+            _motion_fault("lidar_stale")
             return
-
-        start_time = time.time()
-        p = read_in()
-        if p is None:
+        if not _motion_wait(MOTION_SAMPLE_MS):
             return
-
-        if p < DOOR_VENT_IN:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
-                return
-
-            while (time.time() - start_time) <= MAX_TIMEOUT and not abort_motion:
-                feed_watchdog()
-                check_uart()
-                service_button_events()
-                if abort_motion:
-                    break
-
-                p = read_in()
-                if p is None:
-                    time.sleep(0.02)
-                    continue
-
-                if p >= (DOOR_VENT_IN - deadband):
-                    break
-
-                time.sleep(0.02)
-
-            if not abort_motion:
-                safe_motor()
-                vent_status = 1
-                send_vent_status(vent_status)
-
-        elif p > DOOR_VENT_IN:
-            safe_motor()
-            wait_ms_with_service(250)
-            check_uart()
-            if abort_motion:
-                return
-
-            while (time.time() - start_time) <= MAX_TIMEOUT and not abort_motion:
-                feed_watchdog()
-                check_uart()
-                service_button_events()
-                if abort_motion:
-                    break
-
-                p = read_in()
-                if p is None:
-                    time.sleep(0.02)
-                    continue
-
-                if p <= (DOOR_VENT_IN + deadband):
-                    break
-
-                time.sleep(0.02)
-
-            if not abort_motion:
-                safe_motor()
-                vent_status = 1
-                send_vent_status(vent_status)
+    _motion_fault("travel_timeout")
 
 
 # ----------------------------
@@ -1505,9 +1741,11 @@ while True:
         cmd = pending_command
         pending_command = None
         active_motion_command = cmd
+        diag_begin(cmd)
         try:
             start_move(cmd)
         finally:
+            diag_end()
             active_motion_command = None
 
     # Position updates for HTML simulation and status.
@@ -1522,6 +1760,8 @@ while True:
         _last_env_ts_ms = now_ms
         send_environmental_data()
 
+    diag_flush()
     time.sleep(LOOP_SLEEP_S)
+
 
 
