@@ -31,7 +31,7 @@ def feed_watchdog():
 # ----------------------------
 # Firmware version / UART updater
 # ----------------------------
-FW_VERSION = "1.0.23-VERIFIED-DIRECTION-DIAG-SWITCH"
+FW_VERSION = "1.0.24-SETTINGS-CONFIRMED"
 UPDATE_MODE = False
 _update_expected_size = 0
 _update_expected_checksum = ""
@@ -1106,6 +1106,56 @@ def handle_command(cmd):
 # ----------------------------
 # UART config + heartbeat updates from Pi Zero
 # ----------------------------
+_settings_ready = False
+
+
+def send_settings_ack(token=None, ok=True, error=None):
+    payload = {"settings_ack": {"vent_distance": DOOR_VENT_IN,
+               "min_distance": DOOR_OPEN_IN, "max_distance": DOOR_CLOSED_IN,
+               "light_level_on": LIGHT_LEVEL_ON},
+               "settings_token": token, "settings_ok": ok,
+               "settings_ready": _settings_ready}
+    if error:
+        payload["settings_error"] = error
+    try:
+        uart.write(ujson.dumps(payload) + "\n")
+    except Exception:
+        pass
+
+
+def apply_confirmed_settings(values, token=None):
+    global DOOR_VENT_IN, DOOR_OPEN_IN, DOOR_CLOSED_IN, LIGHT_LEVEL_ON
+    global _settings_ready, vent_status
+    keys = ("vent_distance", "min_distance", "max_distance", "light_level_on")
+    try:
+        if not isinstance(values, dict) or any(k not in values for k in keys):
+            raise ValueError("all four settings are required")
+        if any(isinstance(values[k], bool) or not isinstance(values[k], (int, float)) for k in keys):
+            raise ValueError("settings must be numbers")
+        candidate = {k: int(values[k]) for k in keys}
+        if any(candidate[k] != values[k] for k in keys):
+            raise ValueError("settings must be whole numbers")
+        if not (0 < candidate["min_distance"] < candidate["vent_distance"] < candidate["max_distance"]):
+            raise ValueError("distances must satisfy open < vent < closed")
+        if not 0 <= candidate["light_level_on"] <= 65535:
+            raise ValueError("light threshold is outside ADC range")
+        changed = (DOOR_VENT_IN != candidate["vent_distance"] or
+                   DOOR_OPEN_IN != candidate["min_distance"] or
+                   DOOR_CLOSED_IN != candidate["max_distance"])
+        # Validate the complete candidate first, then apply as one operation.
+        DOOR_VENT_IN = candidate["vent_distance"]
+        DOOR_OPEN_IN = candidate["min_distance"]
+        DOOR_CLOSED_IN = candidate["max_distance"]
+        LIGHT_LEVEL_ON = candidate["light_level_on"]
+        _settings_ready = True
+        if changed:
+            vent_status = 0
+            send_vent_status(0)
+        send_settings_ack(token)
+    except Exception as exc:
+        send_settings_ack(token, False, str(exc))
+
+
 def _process_uart_line(line_str):
     global DOOR_VENT_IN, DOOR_OPEN_IN, DOOR_CLOSED_IN, LIGHT_LEVEL_ON
     global _last_hb_ms, _last_net_ms
@@ -1121,7 +1171,10 @@ def _process_uart_line(line_str):
         # UPDATE_MODE blocking logic, or chunks get rejected as "busy".
         if 'cmd' in msg:
             raw_cmd = str(msg.get('cmd', '')).strip().lower()
-            if raw_cmd == 'fw_version':
+            if raw_cmd == 'settings_get':
+                send_settings_ack(msg.get('settings_token'))
+                return
+            elif raw_cmd == 'fw_version':
                 send_fw_version()
                 return
             elif raw_cmd == 'update_start':
@@ -1145,6 +1198,10 @@ def _process_uart_line(line_str):
                 _last_net_ms = utime.ticks_ms()
             return
 
+        if 'settings_apply' in msg:
+            apply_confirmed_settings(msg['settings_apply'], msg.get('settings_token'))
+            return
+
         if 'diagnostics_enabled' in msg:
             set_diagnostics_enabled(msg['diagnostics_enabled'])
             return
@@ -1165,15 +1222,17 @@ def _process_uart_line(line_str):
         if 'action' in msg:
             handle_command(msg.get('action'))
 
-        # Existing config updates
-        if 'vent_distance' in msg:
-            DOOR_VENT_IN = int(msg['vent_distance'])
-        if 'min_distance' in msg:
-            DOOR_OPEN_IN = int(msg['min_distance'])
-        if 'max_distance' in msg:
-            DOOR_CLOSED_IN = int(msg['max_distance'])
-        if 'light_level_on' in msg:
-            LIGHT_LEVEL_ON = int(msg['light_level_on'])
+        # Legacy setup messages remain supported. Missing values retain their
+        # current value; the full combined candidate must still validate.
+        config_keys = ('vent_distance', 'min_distance', 'max_distance', 'light_level_on')
+        if any(k in msg for k in config_keys):
+            if not _settings_ready and not all(k in msg for k in config_keys):
+                send_settings_ack(msg.get('settings_token'), False, 'initial settings must include all four values')
+                return
+            candidate = {'vent_distance': DOOR_VENT_IN, 'min_distance': DOOR_OPEN_IN,
+                         'max_distance': DOOR_CLOSED_IN, 'light_level_on': LIGHT_LEVEL_ON}
+            candidate.update({k: msg[k] for k in config_keys if k in msg})
+            apply_confirmed_settings(candidate, msg.get('settings_token'))
 
     except Exception:
         # With buffered UART, parse errors should be rare. During update mode,
@@ -1305,6 +1364,9 @@ def check_uart():
 # ----------------------------
 def start_move(action):
     global vent_status, abort_motion
+    if not _settings_ready:
+        send_event("motion_blocked_settings_not_ready")
+        return
     send_event("motion_" + action)
     abort_motion = False
     deadband = 1.0
@@ -1700,5 +1762,6 @@ while True:
 
     diag_flush()
     time.sleep(LOOP_SLEEP_S)
+
 
 
